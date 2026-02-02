@@ -1,0 +1,92 @@
+基于大模型语义融合的时间序列预测模型设计与实现
+
+开题报告
+
+一、论文选题背景与意义
+
+时间序列预测是数据科学领域的核心任务，广泛应用于能源负荷预测、金融市场分析、交通流量预测、气象预报等关键场景。准确的时间序列预测能够为决策者提供科学依据，降低运营成本，提升资源配置效率，具有重要的社会经济效益。然而，传统时序预测方法在面对复杂的非线性模式、长程依赖关系以及多变量交互时往往表现不足。研究更加准确且具备可解释性的时间序列预测模型，具有重要的学术价值和实际应用意义。
+
+近年来，大语言模型在自然语言处理和计算机视觉领域展现出强大的模式识别与推理能力，为时间序列分析提供了新的研究范式。将大语言模型的语义理解能力与时间序列的数值特征相融合，有望突破传统方法的局限性，实现更精准的预测。本课题旨在设计一种基于大模型语义融合的时间序列预测模型，通过跨模态对齐技术将时序数据映射至语言模型的语义空间，充分利用预训练模型的知识迁移能力，提升预测精度与泛化性能。
+
+二、国内外研究现状
+
+时间序列预测方法经历了从传统统计模型到深度学习模型，再到大模型融合方法的演进过程。各类方法在不同应用场景中展现出各自的优势与局限性。
+
+传统统计方法以自回归积分滑动平均模型（ARIMA）为代表，通过差分运算将非平稳序列转化为平稳序列，并利用自回归与滑动平均项进行建模[1]。指数平滑方法（Exponential Smoothing）则通过对历史观测值赋予指数衰减权重来捕获时序的水平、趋势与季节性成分[2]。这类方法具有理论基础完备、可解释性强的优点，但其线性假设限制了对复杂非线性模式的建模能力。
+
+深度学习的兴起为时间序列预测带来了新的突破。长短期记忆网络（LSTM）通过门控机制有效缓解了梯度消失问题，能够捕获序列中的长程依赖关系[3]。Transformer架构引入自注意力机制，实现了序列内任意位置间的直接交互，在长序列建模中展现出优越性能[4]。Informer通过稀疏注意力机制显著降低了计算复杂度，使Transformer能够处理更长的输入序列[5]。Autoformer提出序列分解与自相关机制，在长期预测任务中取得了显著进展[6]。PatchTST将时序数据分割为子序列块进行处理，在保持局部语义的同时降低了计算开销[7]。然而，这些专用模型通常需要针对特定任务进行独立设计与训练，缺乏跨领域的通用性。
+
+预训练基础模型的成功促使研究者探索将其应用于时间序列领域。GPT4TS通过微调预训练语言模型进行时序分析，验证了语言模型在时序任务中的潜力[8]。LLMTime直接利用大语言模型进行零样本预测，但其对高精度数值的处理能力受限[9]。TimesNet通过将一维时序转换为二维表示，利用卷积网络捕获多周期模式[10]。iTransformer提出在变量维度而非时间维度进行注意力计算，有效建模了多变量间的相关性[11]。
+
+尽管上述方法取得了显著进展，当前研究仍面临若干挑战：（1）时序数据与语言模型之间存在模态鸿沟，如何实现有效的跨模态对齐是关键问题；（2）现有方法多采用端到端微调策略，计算资源需求高，且可能破坏预训练模型的通用知识；（3）单一尺度的时序建模难以同时捕获局部波动与全局趋势；（4）对时序统计特征的利用不够充分，限制了模型的推理能力。Jin等人提出的Time-LLM框架通过输入重编程技术将时序数据转换为文本原型表示，并采用提示前缀策略增强语言模型的时序推理能力，在保持骨干模型冻结的前提下实现了高效的跨模态适配[12]。该框架为解决上述问题提供了重要思路，但在多尺度特征融合、动态提示生成等方面仍有改进空间。
+
+综上所述，基于大模型语义融合的时间序列预测方法具有广阔的研究前景。本课题将在现有研究基础上，针对跨模态对齐、多尺度建模、提示工程等关键问题展开深入研究，设计并实现一种高效、准确的时间序列预测模型。
+
+参考文献
+
+[1] Box G E P, Jenkins G M, Reinsel G C, et al. Time series analysis: forecasting and control[M]. John Wiley & Sons, 2015.
+[2] Hyndman R J, Athanasopoulos G. Forecasting: principles and practice[M]. OTexts, 2018.
+[3] Hochreiter S, Schmidhuber J. Long short-term memory[J]. Neural computation, 1997, 9(8): 1735-1780.
+[4] Vaswani A, Shazeer N, Parmar N, et al. Attention is all you need[C]//Advances in Neural Information Processing Systems, 2017: 5998-6008.
+[5] Zhou H, Zhang S, Peng J, et al. Informer: Beyond efficient transformer for long sequence time-series forecasting[C]//Proceedings of the AAAI Conference on Artificial Intelligence, 2021, 35(12): 11106-11115.
+[6] Wu H, Xu J, Wang J, et al. Autoformer: Decomposition transformers with auto-correlation for long-term series forecasting[C]//Advances in Neural Information Processing Systems, 2021, 34: 22419-22430.
+[7] Nie Y, Nguyen N H, Sinthong P, et al. A time series is worth 64 words: Long-term forecasting with transformers[C]//International Conference on Learning Representations, 2023.
+[8] Zhou T, Niu P, Wang X, et al. One fits all: Power general time series analysis by pretrained lm[C]//Advances in Neural Information Processing Systems, 2023, 36.
+[9] Gruver N, Finzi M A, Qiu S, et al. Large language models are zero-shot time series forecasters[C]//Advances in Neural Information Processing Systems, 2023.
+[10] Wu H, Hu T, Liu Y, et al. TimesNet: Temporal 2d-variation modeling for general time series analysis[C]//International Conference on Learning Representations, 2023.
+[11] Liu Y, Hu T, Zhang H, et al. iTransformer: Inverted transformers are effective for time series forecasting[C]//International Conference on Learning Representations, 2024.
+[12] Jin M, Wang S, Ma L, et al. Time-LLM: Time series forecasting by reprogramming large language models[C]//International Conference on Learning Representations, 2024.
+
+三、课题研究主要内容与技术路线
+
+（一）研究内容
+
+本课题旨在设计并实现一种基于大模型语义融合的时间序列预测模型，解决跨模态对齐、语义增强与多尺度特征提取等关键问题。研究重点包括：构建高效的时序-语义映射机制，设计面向时序任务的提示工程策略，以及开发多尺度时序特征融合方法。本研究的优势在于充分利用预训练语言模型的模式识别与推理能力，在保持模型参数冻结的前提下实现高效的跨模态知识迁移，降低计算资源需求的同时提升预测性能。
+
+（二）技术路线
+
+本课题采用模块化设计思路，核心技术路线包含以下三个关键模块：
+
+1. 输入重编程模块（Patch Reprogramming）
+
+该模块负责将连续的时间序列数据转换为语言模型可理解的表示形式。具体实现包括：首先对输入序列进行实例归一化处理以消除分布偏移；然后将序列分割为固定长度的子序列块（Patch），每个块聚合局部时序信息作为基本语义单元；接着通过可学习的嵌入层将子序列块映射至嵌入空间；最后利用多头交叉注意力机制，以子序列块嵌入为查询（Query）、以预训练词向量为键值（Key/Value），实现时序特征与文本原型的对齐。该模块的优势在于通过文本原型作为中介桥梁，使时序数据能够被语言模型有效处理，同时保持在预训练语义空间内进行表示学习。
+
+2. 提示前缀模块（Prompt-as-Prefix）
+
+该模块通过自然语言提示增强语言模型对时序任务的理解与推理能力。提示内容包含三个层次：数据集上下文描述，提供输入时序的领域背景信息；任务指令说明，明确预测目标与输出要求；统计特征摘要，包括序列的最小值、最大值、中位数、整体趋势以及主要滞后周期等。该模块将上述信息编码为提示嵌入，作为前缀与重编程后的时序嵌入拼接，共同输入冻结的语言模型。该设计的优势在于通过声明式提示引导模型进行任务相关的推理，无需修改骨干模型参数即可实现任务适配。
+
+3. 多尺度特征融合模块
+
+该模块针对时序数据的多尺度特性进行建模。通过对输入序列进行不同粒度的下采样，提取细粒度的局部波动特征与粗粒度的全局趋势特征。各尺度特征经独立的重编程处理后，在语言模型的不同层级进行融合。该模块的优势在于能够同时捕获短期模式与长期依赖，提升模型对复杂时序模式的建模能力。
+
+（三）实验评估
+
+1. 数据集
+
+本课题主要使用ETT数据集（Electricity Transformer Temperature）进行实验验证。ETTh1/h2为小时级采样，包含7个变量，序列长度17420，具有24小时/168小时周期特征。ETTm1/m2为15分钟级采样，包含7个变量，序列长度69680，适合长序列建模。Weather数据集包含21个气象变量，序列长度52696，季节性特征明显。
+
+2. 评估指标
+
+主要评价指标为MSE（均方误差），计算公式为预测值与真实值差的平方的均值，对大误差敏感，能够有效评估预测精度。辅助指标为MAE（平均绝对误差），单位与原数据一致，便于直观理解预测偏差。
+
+3. 实验结果
+
+模型已完成加载与运行验证，训练效率稳定，初步验证了技术路线的可行性。
+
+（四）后续改进
+
+本课题计划在基础模型框架上进行以下三项改进：
+
+1. 传统模型融合机制：引入线性判断与阈值融合策略，根据输入序列的平稳性、周期性等统计特征，动态选择传统统计模型与深度模型的融合权重。对于周期性强、趋势明显的区间，提高传统模型的贡献度；对于复杂非线性区间，增强深度模型的作用。
+
+2. 多尺度Patch学习：设计多粒度的子序列分割策略，在细粒度层面捕获局部波动，在粗粒度层面提取全局趋势，通过注意力机制实现跨尺度特征融合。
+
+3. 细分提示词优化：根据不同数据集的领域特性与任务需求，设计差异化的提示模板，增强提示内容的针对性与信息量。
+
+四、论文工作进度安排
+
+截至时间          具体执行计划
+2026.1           完成论文初稿，比较该模型与其它传统模型优势
+2026.2           完成改进模块，验证改进效果
+2026.3           将模块应用于特定工程领域
+2026.4           完成论文撰写

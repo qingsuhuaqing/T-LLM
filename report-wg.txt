@@ -1,0 +1,163 @@
+研究生毕业设计开题报告
+
+课题名称：基于大模型语义融合的时间序列预测模型设计与实现
+
+================================================================================
+一、研究背景
+================================================================================
+
+1.1 研究意义
+
+时间序列预测是数据科学领域的核心任务，广泛应用于能源负荷预测、金融市场分析、交通流量预测、气象预报等关键场景。准确的时间序列预测能够为决策者提供科学依据，降低运营成本，提升资源配置效率，具有重要的社会经济效益。然而，传统时序预测方法在面对复杂的非线性模式、长程依赖关系以及多变量交互时往往表现不足。研究更加准确且具备可解释性的时间序列预测模型，具有重要的学术价值和实际应用意义。
+
+1.2 国内外研究现状
+
+基于Transformer架构的时序预测模型是当前研究的热点方向。PatchTST借鉴视觉Transformer中Patch的思想，将时间序列分割为固定长度的子序列作为输入Token，通过通道独立策略有效降低了计算复杂度。iTransformer颠覆了传统Transformer在时间维度做注意力的范式，创新性地提出在变量维度进行注意力计算，在多变量预测任务上显著优于同期模型。TimesNet发现时间序列的变化可以分解为周期内变化与周期间变化，通过FFT检测主要周期，将一维时序重塑为二维张量处理。然而，这类模型存在明显局限：从零开始训练的模型难以在数据有限时学习到足够丰富的模式表示，且模型的泛化能力和可解释性仍有不足。
+
+多尺度与频域分解方法为时序建模提供了另一种思路。TimeMixer提出多尺度分解混合架构，细粒度尺度捕获局部波动，粗粒度尺度捕获长期趋势。N-BEATS提出可解释的神经基扩展分析，通过约束网络输出为多项式基和傅里叶基的线性组合，实现预测结果的可解释分解。这类方法虽然在特定场景下表现优异，但计算开销较大，且缺乏预训练知识的支撑。
+
+大语言模型用于时序预测是近期兴起的新范式。Time-LLM首次系统性地提出将预训练大语言模型重编程用于时序预测，核心创新包括Patch Embedding、Reprogramming Layer和Prompt-as-Prefix。AutoTimes将时序预测表述为上下文预测，通过自回归方式动态生成Prompt。Time-MoE首次将稀疏专家混合引入时序基础模型。这类方法利用了LLM的预训练知识，但可解释性仍然不足。
+
+混合模型与可解释性增强方法是解决上述问题的重要方向。ES-RNN作为M4预测竞赛冠军方法，将指数平滑与RNN结合，证明了混合方法的有效性。Temporal Fusion Transformer提出变量选择网络量化特征重要性，实现了预测过程的透明化。然而，现有研究尚缺乏系统性地将传统统计模型优势与LLM重编程范式深度融合的工作。
+
+1.3 研究内容
+
+本课题以Time-LLM为基础框架，深入研究大语言模型适配时序预测任务的关键技术。主要研究内容包括：深入理解Time-LLM的技术原理，完成论文复现与验证；设计残差学习混合架构，融合传统统计模型与LLM深度预测；实现变量间注意力增强、频域增强、动态Prompt等创新模块；在长序列、多变量数据集上验证改进效果并完成毕业论文撰写。
+
+================================================================================
+二、技术路线
+================================================================================
+
+2.1 网络架构
+
+Time-LLM的核心思想是通过"重编程"技术，在保持大语言模型权重冻结的前提下，将时序数据映射至LLM的语义空间，从而利用LLM预训练获得的模式识别能力进行时序预测。
+
+整体数据流程如下：原始时序数据首先经过实例归一化，计算均值和方差进行Z-score标准化；然后提取统计特征（min、max、median、trend、top-5 lags）构建自然语言Prompt；同时对时序数据进行Patching分块，通过1D卷积投影到d_model维度；接着通过Reprogramming Layer实现时序域到文本域的跨模态对齐；将Prompt嵌入与重编程后的Patch嵌入拼接后输入冻结的LLM；最后通过FlattenHead输出投影并反归一化得到预测结果。
+
+（此处预留网络架构图位置）
+
+2.2 项目代码结构
+
+Time-LLM项目采用模块化设计，主要目录结构如下：
+
+models目录：包含核心模型定义。TimeLLM.py为主模型文件，实现了LLM加载、Reprogramming Layer、FlattenHead等核心组件；同时包含Autoformer.py、DLinear.py等基线模型。
+
+layers目录：包含神经网络层组件。Embed.py实现PatchEmbedding，将时序切分为Patch并嵌入；StandardNorm.py实现实例归一化层；SelfAttention_Family.py实现注意力机制。
+
+data_provider目录：包含数据加载与处理模块。data_factory.py为数据集路由器，根据参数选择对应Dataset类；data_loader.py实现ETT、Weather、Electricity等数据集的加载器。
+
+utils目录：包含工具函数。tools.py提供EarlyStopping、验证函数、load_content等；metrics.py实现MAE、MSE、RMSE等评估指标。
+
+dataset目录：存放数据集文件。prompt_bank子目录存储各数据集的领域描述文本，用于构建动态Prompt。
+
+scripts目录：包含各数据集的训练脚本，如TimeLLM_ETTh1.sh、TimeLLM_ETTm1.sh等。
+
+run_main.py为主训练入口，支持长期预测任务的训练和评估。
+
+2.3 核心模块详解
+
+实例归一化层：对每个输入样本独立进行归一化处理，保存均值和标准差用于输出时的反归一化，确保不同尺度的时序数据统一到相近的数值范围。
+
+Patching分块模块：借鉴视觉Transformer设计，将长时间序列通过滑动窗口切分为固定长度的Patch。以seq_len=96、patch_len=16、stride=8为例，共生成12个重叠的Patch，既降低计算复杂度又保留局部时序依赖。
+
+Reprogramming Layer：通过Cross-Attention机制实现时序域到文本域的跨模态对齐。Query来自Patch Embeddings，Key和Value来自经过Mapping Layer压缩的LLM词嵌入。Mapping Layer将原始词表压缩为1000个可学习的虚拟Token。
+
+Prompt-as-Prefix模块：在输入前添加包含数据集领域描述、任务描述、输入序列统计信息的自然语言提示，激活LLM的趋势识别与模式匹配能力。
+
+冻结的LLM骨干网络：LLM参数完全冻结，不参与训练更新。本课题使用Qwen 2.5 3B模型（4-bit量化后约1.5GB显存）。
+FlattenHead输出投影
+
+将LLM输出的后num_patches个位置的特征展平后，通过线性层映射到预测长度pred_len。该模块参数量约37K。
+
+可训练参数分析：PatchEmbedding约800参数；Mapping Layer约50M参数（最大参数块）；Reprogramming Layer约6M参数；FlattenHead约37K参数。总计约56M可训练参数，LLM参数完全冻结。
+
+2.4 创新点设计
+
+创新点一：可解释性增强与传统模型集成。Time-LLM虽然利用了LLM的能力，但预测过程仍是黑盒，缺乏可解释性。而传统统计模型（ARIMA、指数平滑）具有透明的数学结构。本课题采用残差学习架构：传统模型先捕获线性成分（趋势、季节性），Time-LLM学习残差中的非线性模式。最终预测为线性预测与非线性预测之和。适用场景为周期性明显的数据，如ETT电力负荷、Traffic交通流量。
+
+创新点二：分段自适应融合。输入序列的不同区间可能呈现不同模式（如前半段平稳、后半段剧烈波动），固定权重的融合无法适应这种变化。本课题设计分段模式检测器，根据每段的特征（周期性、趋势性、噪声水平）动态分配传统模型与Time-LLM的权重。检测指标包括ADF平稳性检验、FFT能量集中度、线性回归斜率、噪声水平等。适用场景为非平稳时序、模式变化剧烈的数据。
+
+创新点三：变量间注意力增强。灵感来源于iTransformer。Time-LLM将多变量展平为独立样本处理，完全忽略了变量间的相关性。而实际数据中，变量间往往存在强关联。本课题在Reprogramming Layer后添加Inter-Variate Attention模块，在变量维度进行注意力计算，捕获多变量相关性。适用场景为多变量预测、变量间有强相关性的数据。
+
+创新点四：频域增强。灵感来源于TimesNet。时序数据通常包含趋势和周期成分，在时域直接处理可能混淆这两种模式。本课题在Patching前通过FFT分解为低频（趋势）和高频（季节性）成分，分别用不同参数的分支处理后融合。适用场景为ETTh（小时数据，24h/168h周期明显）、Weather（季节性强）等数据集。
+
+创新点五：动态Prompt生成。灵感来源于AutoTimes。现有统计信息提示词是全局的，无法反映序列内的局部变化，当数据分布突变时静态Prompt无法感知，缺乏针对具体样本的动态调整。本课题在Prompt构建阶段引入分层动态生成机制，将静态文本Prompt与数据驱动的动态嵌入相结合。适用场景为ETT数据集中的节假日/季节转换时段、Weather数据集的极端天气时段、Traffic数据集的交通高峰/低谷转换。
+
+================================================================================
+三、实验评估
+================================================================================
+
+3.1 数据集
+
+本课题主要使用ETT数据集（Electricity Transformer Temperature）进行实验验证。ETTh1/h2为小时级采样，包含7个变量，序列长度17420，具有24h/168h周期特征。ETTm1/m2为15分钟级采样，包含7个变量，序列长度69680，适合长序列建模。Weather数据集包含21个气象变量，序列长度52696，季节性特征明显。
+
+3.2 评估指标
+
+主要评价指标为MSE（均方误差），公式为预测值与真实值差的平方的均值，对大误差敏感。辅助指标为MAE（平均绝对误差），单位与原数据一致，便于直观理解。
+
+3.3 实验环境与硬件适配
+
+实验环境：Windows 11 + WSL2 (Ubuntu)，GPU为NVIDIA GTX 1660 Ti (6GB VRAM)，深度学习框架PyTorch 2.0+，LLM后端为Qwen 2.5 3B (4-bit量化)。
+
+由于本机GPU显存仅有6GB，无法直接运行原论文使用的LLAMA-7B模型。本课题采用以下优化策略：使用Qwen 2.5 3B替代LLAMA-7B，通过4-bit量化压缩显存占用至约1.5GB；配置llm_layers=6（原始32层裁剪至6层）；调整batch_size为4-8；使用混合精度训练。
+
+3.4 实验结果
+
+本课题成功在ETTh1数据集上完成Time-LLM的复现验证。由于本机算力有限，仅运行1个epoch以验证项目可以正确执行。训练日志显示模型正常收敛。
+
+训练过程记录（部分）：迭代100次时Loss为1.2920，迭代200次时Loss为0.3284，迭代400次时Loss为0.3328，迭代3200次时Loss为0.3007，迭代3400次时Loss为0.2098，迭代3900次时Loss为0.2834。训练速度稳定在1.0-1.2秒/迭代。
+
+实验结果分析：模型成功加载与运行，Qwen 2.5 3B模型通过4-bit量化成功加载；损失函数收敛，训练Loss从初始的1.29逐步下降至0.2-0.3区间；训练效率稳定，无显存溢出。
+
+在复现过程中解决的技术问题：transformers版本过低导致的KeyError问题，升级至4.40.0以上解决；4-bit量化导致的数据类型不匹配问题，修改TimeLLM.py统一数据类型解决；llm_layers默认32层过多导致的显存溢出问题，减少至6层解决。
+
+================================================================================
+四、未来计划
+================================================================================
+
+4.1 总体进度安排
+
+2026年1月：完成开题报告、论文撰写、创新模块设计。
+2026年2月：完成代码改进、消融实验、算力申请、对比实验。
+2026年3月：完成论文完善、答辩准备、成果整理。
+
+4.2 详细执行计划
+
+1月末前：完成论文初稿（方法与实验章节），详细阐述课题意义、技术原理、代码框架、复现过程；完成残差学习架构的详细设计文档。
+
+2月中旬前：实现残差学习混合架构（创新点一）和分段自适应融合（创新点二）的可运行代码；协调课题组算力资源，申请更大参数模型的运行环境。
+
+2月末前：在ETT数据集上验证创新模块效果，完成完整实验结果；逐一验证各创新点的有效性，完成消融实验表格；与PatchTST、iTransformer等基线模型对比，完成对比实验报告；可视化趋势/季节性分解、权重分配。
+
+3月初：撰写引言、相关工作、结论章节，完成论文终稿；深入分析实验结果，总结创新贡献。
+
+3月中旬：制作答辩PPT，准备答辩材料；整理代码文档，确保可复现性。
+
+4.3 风险控制
+
+算力不足风险：申请课题组服务器资源，利用寒假空闲时段运行实验。创新效果不显著风险：准备备选方案（变量间注意力、频域增强），灵活调整研究重点。实验周期过长风险：优先在小数据集验证，确认有效后扩展至完整数据集。
+
+4.4 预期成果
+
+技术成果：可解释性增强的混合时序预测模型，在ETT数据集上MSE降低15-20%的实验验证。学术成果：完成毕业论文撰写，具备投稿国内会议/期刊的研究基础。应用价值：在电力负荷预测、交通流量预测等场景提供可解释的预测依据。
+
+================================================================================
+五、参考文献
+================================================================================
+
+[1] Nie Y, et al. A Time Series is Worth 64 Words: Long-term Forecasting with Transformers. ICLR, 2023.
+[2] Wu H, et al. TimesNet: Temporal 2D-Variation Modeling for General Time Series Analysis. ICLR, 2023.
+[3] Liu Y, et al. iTransformer: Inverted Transformers Are Effective for Time Series Forecasting. ICLR, 2024.
+[4] Jin M, et al. Time-LLM: Time Series Forecasting by Reprogramming Large Language Models. ICLR, 2024.
+[5] Wang S, et al. TimeMixer: Decomposable Multiscale Mixing for Time Series Forecasting. ICLR, 2024.
+[6] Oreshkin B N, et al. N-BEATS: Neural Basis Expansion Analysis for Interpretable Time Series Forecasting. ICLR, 2020.
+[7] Liu Y, et al. AutoTimes: Autoregressive Time Series Forecasters via Large Language Models. NeurIPS, 2024.
+[8] Shi X, et al. Time-MoE: Billion-Scale Time Series Foundation Models with Mixture of Experts. ICLR, 2025.
+[9] Smyl S. A Hybrid Method of Exponential Smoothing and Recurrent Neural Networks for Time Series Forecasting. International Journal of Forecasting, 2020.
+[10] Lim B, et al. Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting. International Journal of Forecasting, 2021.
+[11] Zhang G P. Time Series Forecasting Using a Hybrid ARIMA and Neural Network Model. Neurocomputing, 2003.
+
+================================================================================
+
+报告撰写日期：2026年1月
+字数统计：约 3800 字
