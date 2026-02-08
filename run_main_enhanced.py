@@ -342,7 +342,39 @@ for ii in range(args.itr):
             ckpt = torch.load(ckpt_file, map_location='cpu', weights_only=False)
             model_to_load = accelerator.unwrap_model(model)
             if isinstance(ckpt, dict) and 'model' in ckpt:
-                model_to_load.load_state_dict(ckpt['model'])
+                # 修复: 处理 GRA-M 记忆库的动态形状
+                # 记忆库 buffer 形状可能不同 (checkpoint 中有数据，模型初始化为空)
+                # 使用 strict=False 加载，然后手动恢复记忆库
+                state_dict = ckpt['model']
+
+                # 提取记忆库相关的 buffer (如果存在)
+                memory_buffers = {}
+                memory_keys_to_remove = []
+                for key in state_dict:
+                    if 'memory_keys' in key or 'memory_values' in key or 'memory_size' in key:
+                        memory_buffers[key] = state_dict[key]
+                        memory_keys_to_remove.append(key)
+
+                # 从 state_dict 中移除记忆库 buffer，避免形状不匹配错误
+                for key in memory_keys_to_remove:
+                    del state_dict[key]
+
+                # 加载其他权重
+                model_to_load.load_state_dict(state_dict, strict=False)
+
+                # 手动恢复记忆库 buffer
+                if memory_buffers:
+                    accelerator.print(f"Restoring GRA-M memory buffers: {list(memory_buffers.keys())}")
+                    for key, value in memory_buffers.items():
+                        # 解析嵌套属性路径，如 'gram.retriever.memory_keys'
+                        parts = key.split('.')
+                        obj = model_to_load
+                        for part in parts[:-1]:
+                            obj = getattr(obj, part)
+                        # 直接设置 buffer
+                        setattr(obj, parts[-1], value.to(accelerator.device))
+                    accelerator.print("GRA-M memory buffers restored successfully")
+
                 if 'optimizer' in ckpt and ckpt['optimizer'] is not None:
                     model_optim.load_state_dict(ckpt['optimizer'])
                 if 'scheduler' in ckpt and ckpt['scheduler'] is not None:
