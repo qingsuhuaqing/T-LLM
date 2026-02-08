@@ -57,7 +57,7 @@ LOG_DIR="${PROJECT_DIR}/logs"
 
 # 每 N step 保存一次（0=关闭）
 # 建议: 根据数据集大小设置，ETTh1约8500*2样本，batch_size=32时约1757步/epoch
-SAVE_STEPS=1758
+SAVE_STEPS=1755
 # 只保留最近 N 个 step checkpoint（0=关闭）
 SAVE_TOTAL_LIMIT=10
 
