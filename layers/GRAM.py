@@ -418,6 +418,37 @@ class GRAM(nn.Module):
         # 是否启用检索 (训练时可能需要disable)
         self.retrieval_enabled = True
 
+    @staticmethod
+    def _resize_last_dim(tensor, target_dim):
+        """
+        将任意形状张量的“最后一维”重采样到 target_dim，前面的维度保持不变。
+
+        设计目的:
+        1) memory_values 期望是 [..., d_model]，否则后续 Linear(d_model, d_model) 会报维度错误。
+        2) 旧实现在构建记忆库时把插值用在了错误维度，可能产生 [..., 1] 或 [..., 7] 等形状。
+
+        实现方式:
+        - 先把张量折叠成 [N, 1, C]（C=原最后一维）
+        - 在 C 这个轴上线性插值到 target_dim
+        - 再恢复回原始前缀维度
+        """
+        if tensor is None or tensor.shape[-1] == target_dim:
+            return tensor
+
+        original_shape = tensor.shape
+        original_dtype = tensor.dtype
+
+        # F.interpolate(linear) 需要 3D 输入 [N, C, L]；此处固定通道数为1，
+        # 把“最后一维”当作可插值的长度轴处理。
+        tensor_3d = tensor.reshape(-1, 1, original_shape[-1]).float()
+        resized = F.interpolate(
+            tensor_3d,
+            size=target_dim,
+            mode='linear',
+            align_corners=False
+        )
+        return resized.reshape(*original_shape[:-1], target_dim).to(original_dtype)
+
     def build_memory_from_dataloader(self, dataloader, model, device, max_samples=5000):
         """
         从数据加载器构建记忆库
@@ -448,20 +479,16 @@ class GRAM(nn.Module):
                 # 取预测部分作为标签
                 labels = batch_y[:, -self.pred_len:, :]
 
-                # 调整维度
-                if features.shape[-1] != self.d_model:
-                    features = F.interpolate(
-                        features.permute(0, 2, 1),
-                        size=self.d_model,
-                        mode='linear'
-                    ).permute(0, 2, 1)
-
-                if labels.shape[-1] != self.d_model:
-                    labels = F.interpolate(
-                        labels.permute(0, 2, 1),
-                        size=self.d_model,
-                        mode='linear'
-                    ).permute(0, 2, 1)
+                # 关键修复:
+                # 记忆库里检索值 memory_values 必须是 [N, pred_len, d_model]。
+                # 旧代码把 labels.permute 后按 size=d_model 插值，实际上改的是“时间维”，
+                # 会导致最后一维仍是原通道数(如1/7)，进而在 AKG 的 Linear(d_model, d_model)
+                # 处触发:
+                # RuntimeError: mat1 and mat2 shapes cannot be multiplied (...x1 and 64x64)
+                #
+                # 这里统一按“最后一维”对齐，确保 features/labels 最后一维都是 d_model。
+                features = self._resize_last_dim(features, self.d_model)
+                labels = self._resize_last_dim(labels, self.d_model)
 
                 all_features.append(features.cpu())
                 all_labels.append(labels.cpu())
@@ -500,6 +527,11 @@ class GRAM(nn.Module):
             if return_retrieval_info:
                 return x, context_embed, {'gate_weights': torch.ones(x.shape[0], 1, device=x.device)}
             return x, context_embed, None
+
+        # 兼容性兜底:
+        # 如果加载的是旧 checkpoint，里面可能已经保存了错误形状的 memory_values
+        # （最后一维不是 d_model）。这里在前向阶段再次对齐，避免训练/推理直接崩溃。
+        retrieved_refs = self._resize_last_dim(retrieved_refs, self.d_model)
 
         # 2. 自适应门控融合
         enhanced_x, gate_weights, match_scores = self.gating(
