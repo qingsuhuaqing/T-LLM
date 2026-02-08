@@ -56,8 +56,8 @@ CHECKPOINTS="${PROJECT_DIR}/checkpoints"
 LOG_DIR="${PROJECT_DIR}/logs"
 
 # 每 N step 保存一次（0=关闭）
-# 建议: 根据数据集大小设置，ETTh1约8500样本，batch_size=16时约531步/epoch
-SAVE_STEPS=1757
+# 建议: 根据数据集大小设置，ETTh1约8500*2样本，batch_size=32时约1757步/epoch
+SAVE_STEPS=1758
 # 只保留最近 N 个 step checkpoint（0=关闭）
 SAVE_TOTAL_LIMIT=10
 
@@ -150,7 +150,7 @@ LAMBDA_RETRIEVAL=0.3
 
 # 是否构建检索记忆库
 # 首次训练时启用，从训练数据构建历史模式库
-BUILD_MEMORY=1
+BUILD_MEMORY=0
 
 # 模式表示向量维度（用于检索）
 # 较大维度可表示更复杂模式，但增加内存占用
