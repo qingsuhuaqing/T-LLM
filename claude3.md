@@ -684,6 +684,93 @@ RESUME_COUNTER=0
 BUILD_MEMORY=0  # 避免重建记忆库
 ```
 
+### 7.5 断点续训参数详解
+
+#### RESUME_COUNTER 机制
+
+**Q: RESUME_COUNTER 是否保存在 checkpoint 中？**
+
+**A: 是的。** EarlyStopping 的 counter 保存在 checkpoint 的 `counter` 字段中。
+
+```python
+# run_main_enhanced.py:492-500 保存逻辑
+ckpt_payload = {
+    ...
+    'counter': early_stopping.counter,  # ← EarlyStopping 计数器
+    ...
+}
+
+# run_main_enhanced.py:364-373 恢复逻辑
+early_stopping.counter = ckpt.get('counter', 0)  # ← 从 checkpoint 恢复
+
+# 只有当 resume_counter >= 0 时才覆盖
+if args.resume_counter is not None and args.resume_counter >= 0:
+    early_stopping.counter = args.resume_counter
+```
+
+**结论**: `RESUME_COUNTER=-1` 表示"不覆盖，使用 checkpoint 中的值"。不手动设置也不影响续训。
+
+#### 参数分类表
+
+**✅ 自动恢复（无需修改）**
+
+| 状态 | checkpoint key | 说明 |
+|------|----------------|------|
+| 模型权重 | `model` | 包括 memory_keys/memory_values (GRA-M记忆库) |
+| 优化器状态 | `optimizer` | Adam 的学习率、动量等 |
+| 调度器状态 | `scheduler` | OneCycleLR 进度 |
+| 当前 epoch | `epoch` | 从哪个 epoch 继续 |
+| 全局步数 | `global_step` | warmup 和 checkpoint 依赖此值 |
+| EarlyStopping | `best_score`, `val_loss_min`, `counter` | 早停判断状态 |
+| 随机状态 | `rng_state` | Python/NumPy/PyTorch 随机种子 |
+| AMP scaler | `scaler` | 混合精度训练状态 |
+| 采样器状态 | `sampler_state` | 数据采样位置 |
+
+**⚠️ 可安全修改**
+
+| 参数 | 说明 |
+|------|------|
+| `RESUME_FROM` | **必须设置**为 checkpoint 路径 |
+| `RESUME_COUNTER` | 可选覆盖 EarlyStopping 计数 (-1=不覆盖) |
+| `SAVE_STEPS` | checkpoint 保存频率 |
+| `SAVE_TOTAL_LIMIT` | 保留的 checkpoint 数量 |
+| `LOG_DIR` | 日志目录 |
+| `TRAIN_EPOCHS` | 可增加总训练轮数 |
+| `PATIENCE` | 可增加早停耐心值 |
+| `LEARNING_RATE` | ⚠️ 可改但会打断学习率调度曲线 |
+| `LAMBDA_TREND` | 辅助损失权重，可微调 |
+| `LAMBDA_RETRIEVAL` | 辅助损失权重，可微调 |
+| `BUILD_MEMORY` | **必须设为 0**，避免重建记忆库 |
+
+**❌ 不可修改（会导致权重不匹配错误）**
+
+| 参数 | 原因 |
+|------|------|
+| `LLM_PATH`, `LLM_DIM`, `LLM_LAYERS` | LLM 结构变化导致权重不匹配 |
+| `SEQ_LEN`, `LABEL_LEN`, `PRED_LEN` | 影响模型输入输出维度 |
+| `D_MODEL`, `D_FF`, `N_HEADS` | 影响 Patch Embedding 和 Reprogramming 层 |
+| `USE_TAPR`, `USE_GRAM` | 模块开关变化导致权重缺失 |
+| `N_SCALES` | 影响 TAPR 多尺度分解结构 |
+| `TOP_K`, `D_REPR` | 影响 GRA-M 检索器结构 |
+| `ENC_IN`, `DEC_IN`, `C_OUT` | 变量数量变化导致维度不匹配 |
+| `PATCH_LEN`, `STRIDE` | 影响 patch 数量和嵌入结构 |
+
+#### 断点续训最佳实践
+
+```bash
+# 1. 设置 checkpoint 路径 (必须)
+RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_.../checkpoint_step_1757/checkpoint.pt"
+
+# 2. 禁用记忆库重建 (必须)
+BUILD_MEMORY=0
+
+# 3. EarlyStopping 计数器 (通常不需要修改)
+RESUME_COUNTER=-1  # 使用 checkpoint 中保存的值
+
+# 4. 所有结构参数保持与首次训练一致
+# USE_TAPR, USE_GRAM, N_SCALES, TOP_K, D_REPR, SEQ_LEN, PRED_LEN 等
+```
+
 ---
 
 ## 8. 故障排除
@@ -746,60 +833,3 @@ print(f"magnitude_logits: {trend_info.get('magnitude_logits', 'N/A').shape}")
 
 **最后更新**: 2026-02-08
 **状态**: 所有已知问题已修复，待消融实验验证
- 我已经生成了完整的 claude3.md 文档。文档包含以下内容：
-
-  文档概要
-
-  1. 架构总览
-
-  - 完整的数据流图 (ASCII 图示)
-  - 模块层级结构图，明确标注了 TAPR-DM、TAPR-C2F、GRA-M-PVDR、GRA-M-AKG 各子模块所属的大模块
-
-  2. 模块详解
-
-  - TAPR-DM (MultiScaleDecomposition): 多尺度分解，包含代码位置 layers/TAPR.py:32-184
-  - TAPR-C2F (CoarseToFineHead): 先粗后细预测头，包含代码位置 layers/TAPR.py:231-402
-  - GRA-M-PVDR (PatternValueDualRetriever): 模式-数值双重检索器
-  - GRA-M-AKG (AdaptiveKnowledgeGating): 自适应知识门控
-  - C2F趋势融合: _apply_trend_fusion() 方法
-  - _resize_last_dim: 之前修复的维度对齐工具函数
-
-  3. 数据流详解
-
-  - 完整的形状变化表 (ETTh1 示例)
-  - 辅助损失计算流程和 warmup 机制说明
-
-  4. 修改记录
-
-  - 7个问题修复清单 (含文件:行号)
-  - 超参数调整表 (原值→新值→原因)
-
-  5. 命令参数说明
-
-  重点参数作用说明:
-  | 参数           | 是否发挥作用    | 消融建议             |
-  |--------------|-----------|------------------|
-  | N_SCALES     | ⚠️ 需验证    | 测试 2, 3, 4       |
-  | LAMBDA_TREND | ✅ 已增大到0.5 | 测试 0.3, 0.5, 0.7 |
-  | TOP_K        | ⚠️ 需验证    | 测试 3, 5, 10      |
-  | BUILD_MEMORY | ✅ 首次必须启用  | 断点续训设为0          |
-  | D_REPR       | ⚠️ 需验证    | 与d_ff保持一致        |
-
-  6. 消融实验指南
-
-  - 4种实验配置 (仅TAPR / 仅GRA-M / 完整模型 / 基线)
-  - 参数敏感性实验设置
-  - 判断参数是否发挥作用的3种方法
-  - 调整建议
-
-  7. Checkpoint 与推理
-
-  - Checkpoint 结构和内容说明
-  - 推理加载代码示例
-  - 断点续训注意事项
-
-  8. 故障排除
-
-  - 常见错误及解决方案
-  - 显存优化优先级
-  - 调试建议
