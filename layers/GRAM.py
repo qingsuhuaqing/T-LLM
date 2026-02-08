@@ -15,6 +15,13 @@ GRA-M (Global Retrieval-Augmented Memory) - 全局检索增强记忆网络
 参考论文:
 - RAFT: Retrieval-Augmented Forecasting for Time Series
 - TS-RAG: Time Series Retrieval-Augmented Generation
+
+修改日志 (2026-02-08):
+- 修复 compute_retrieval_loss 中 device 不匹配问题
+- 修复记忆库构建时的维度错误
+- 添加 warmup 机制防止过拟合
+- 优化特征提取方式，使用更有意义的表示
+- 添加详细注释说明每个组件的作用
 """
 
 import torch
@@ -27,7 +34,13 @@ import numpy as np
 class PatternEncoder(nn.Module):
     """
     模式编码器
+
     将时间序列片段编码为可检索的向量表示
+    使用Transformer编码器捕获序列中的时序依赖关系
+
+    设计理念:
+    - 使用CLS token聚合整个序列的信息
+    - 投影到低维表示空间便于高效检索
     """
 
     def __init__(self, d_model, d_repr=128, num_layers=2, dropout=0.1):
@@ -44,6 +57,7 @@ class PatternEncoder(nn.Module):
         self.d_repr = d_repr
 
         # 多层Transformer编码器
+        # 捕获序列中的时序依赖关系
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=4,
@@ -55,12 +69,14 @@ class PatternEncoder(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # 投影到表示空间
+        # 使用LayerNorm稳定训练
         self.proj = nn.Sequential(
             nn.Linear(d_model, d_repr),
             nn.LayerNorm(d_repr)
         )
 
         # 可学习的[CLS] token用于聚合序列信息
+        # 类似BERT的设计，CLS token的输出表示整个序列
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
 
     def forward(self, x):
@@ -74,14 +90,14 @@ class PatternEncoder(nn.Module):
         """
         B, L, D = x.shape
 
-        # 添加CLS token
+        # 添加CLS token到序列开头
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x_with_cls = torch.cat([cls_tokens, x], dim=1)  # [B, L+1, D]
 
         # Transformer编码
         seq_out = self.encoder(x_with_cls)
 
-        # 使用CLS token的输出作为表示
+        # 使用CLS token的输出作为整个序列的表示
         cls_out = seq_out[:, 0, :]  # [B, D]
 
         # 投影到表示空间
@@ -99,6 +115,11 @@ class PatternValueDualRetriever(nn.Module):
     1. 检索与当前输入形状相似的历史模式
     2. 同时获取这些历史模式后续的真实值作为参考
     3. 结合形状和数值两个维度进行相似度计算
+
+    创新点:
+    - 形状相似性: 捕获时序模式的形态特征
+    - 数值相似性: 考虑实际数值范围的匹配
+    - 双重检索: 综合两种相似性进行最终匹配
     """
 
     def __init__(self, d_model, d_repr=128, top_k=5, temperature=0.1, dropout=0.1):
@@ -107,7 +128,7 @@ class PatternValueDualRetriever(nn.Module):
             d_model: 特征维度
             d_repr: 表示向量维度
             top_k: 检索的相似模式数量
-            temperature: 相似度softmax温度
+            temperature: 相似度softmax温度 (越小越尖锐)
             dropout: Dropout比例
         """
         super(PatternValueDualRetriever, self).__init__()
@@ -117,10 +138,10 @@ class PatternValueDualRetriever(nn.Module):
         self.top_k = top_k
         self.temperature = temperature
 
-        # 模式编码器
+        # 模式编码器 - 提取形状特征
         self.pattern_encoder = PatternEncoder(d_model, d_repr, dropout=dropout)
 
-        # 数值编码器 (捕获数值特征)
+        # 数值编码器 - 提取数值统计特征
         self.value_encoder = nn.Sequential(
             nn.Linear(d_model, d_repr),
             nn.LayerNorm(d_repr),
@@ -129,12 +150,13 @@ class PatternValueDualRetriever(nn.Module):
         )
 
         # 形状-数值融合权重
+        # 可学习的权重决定两种相似性的相对重要性
         self.shape_weight = nn.Parameter(torch.tensor(0.5))
 
         # 历史模式库 (在线构建)
-        # 这些在训练时会动态更新
-        self.register_buffer('memory_keys', None)  # [M, d_repr]
-        self.register_buffer('memory_values', None)  # [M, pred_len, d_model]
+        # 使用register_buffer确保这些tensor随模型保存/加载
+        self.register_buffer('memory_keys', None)  # [M, d_repr] - 检索键
+        self.register_buffer('memory_values', None)  # [M, pred_len, d_model] - 检索值
         self.register_buffer('memory_size', torch.tensor(0))
         self.max_memory_size = 10000  # 最大记忆容量
 
@@ -152,6 +174,7 @@ class PatternValueDualRetriever(nn.Module):
             value_vecs = self.value_encoder(train_data.mean(dim=1))  # [N, d_repr]
 
             # 融合形状和数值特征
+            # shape_weight控制两者的相对重要性
             combined_keys = self.shape_weight * repr_vecs + (1 - self.shape_weight) * value_vecs
 
             # 存储到记忆库
@@ -162,6 +185,8 @@ class PatternValueDualRetriever(nn.Module):
     def update_memory(self, new_data, new_labels, update_ratio=0.1):
         """
         在线更新记忆库 (可选)
+
+        支持增量更新，随机替换部分旧记忆
 
         Args:
             new_data: 新样本输入
@@ -190,6 +215,8 @@ class PatternValueDualRetriever(nn.Module):
         """
         在线阶段: 检索相似历史模式
 
+        使用欧几里得距离计算相似度（时序数据的形状相似性）
+
         Args:
             query: 查询输入 [B, L, d_model]
             return_indices: 是否返回检索索引
@@ -211,24 +238,22 @@ class PatternValueDualRetriever(nn.Module):
         query_key = self.shape_weight * query_repr + (1 - self.shape_weight) * query_value
 
         # 计算与记忆库的相似度
-        # 使用欧几里得距离 (时序数据的形状相似性)
-        # similarity = -||q - k||^2
+        # 使用欧几里得距离 (时序数据的形状相似性更适合用距离度量)
         query_key_expanded = query_key.unsqueeze(1)  # [B, 1, d_repr]
         memory_keys_expanded = self.memory_keys.unsqueeze(0)  # [1, M, d_repr]
 
-        # 欧几里得距离
+        # 欧几里得距离转换为相似度
         distances = torch.sum((query_key_expanded - memory_keys_expanded) ** 2, dim=-1)  # [B, M]
         similarity = -distances / self.temperature
 
-        # 选择Top-K
+        # 选择Top-K最相似的模式
         top_k = min(self.top_k, self.memory_keys.shape[0])
         top_scores, top_indices = torch.topk(similarity, k=top_k, dim=-1)  # [B, top_k]
 
-        # 归一化权重
+        # 归一化权重 (softmax确保权重和为1)
         similarity_weights = F.softmax(top_scores, dim=-1)  # [B, top_k]
 
         # 检索对应的历史未来值
-        # memory_values: [M, pred_len, d_model]
         retrieved_refs = self.memory_values[top_indices]  # [B, top_k, pred_len, d_model]
 
         if return_indices:
@@ -245,6 +270,10 @@ class AdaptiveKnowledgeGating(nn.Module):
     1. 评估当前输入与检索模式的匹配度
     2. 自适应融合模型预测和检索参考
     3. 处理检索噪声，提升预测稳定性
+
+    设计理念:
+    - 当检索到的历史模式与当前输入高度匹配时，更多依赖历史经验
+    - 当匹配度低或当前输入有独特特征时，更多依赖模型推理
     """
 
     def __init__(self, d_model, pred_len, dropout=0.1):
@@ -276,6 +305,7 @@ class AdaptiveKnowledgeGating(nn.Module):
         )
 
         # 匹配度评估网络
+        # 评估每个检索结果与当前输入的匹配程度
         self.match_scorer = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.GELU(),
@@ -284,6 +314,7 @@ class AdaptiveKnowledgeGating(nn.Module):
         )
 
         # 门控网络: 决定依赖历史还是当前
+        # 输出接近1表示依赖当前推理，接近0表示依赖历史经验
         self.gate_network = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.GELU(),
@@ -293,6 +324,7 @@ class AdaptiveKnowledgeGating(nn.Module):
         )
 
         # 交叉注意力融合
+        # 当前特征作为Query，检索结果作为Key/Value
         self.cross_attention = nn.MultiheadAttention(
             d_model, num_heads=4, dropout=dropout, batch_first=True
         )
@@ -319,7 +351,7 @@ class AdaptiveKnowledgeGating(nn.Module):
 
         B = current_feat.shape[0]
 
-        # 1. 编码当前特征
+        # 1. 编码当前特征 (全局池化)
         current_pooled = current_feat.mean(dim=1)  # [B, d_model]
         current_encoded = self.current_encoder(current_pooled)  # [B, d_model]
 
@@ -333,6 +365,7 @@ class AdaptiveKnowledgeGating(nn.Module):
         retrieved_encoded = self.retrieved_encoder(retrieved_pooled)  # [B, top_k, d_model]
 
         # 3. 计算每个检索结果的匹配度
+        # 将当前特征与每个检索结果拼接，评估匹配程度
         current_expanded = current_encoded.unsqueeze(1).expand(-1, retrieved_encoded.shape[1], -1)
         match_input = torch.cat([current_expanded, retrieved_encoded], dim=-1)  # [B, top_k, d_model*2]
         match_scores = self.match_scorer(match_input).squeeze(-1)  # [B, top_k]
@@ -359,6 +392,8 @@ class AdaptiveKnowledgeGating(nn.Module):
         )
 
         # 7. 门控融合
+        # gate_weight高: 更依赖当前特征
+        # gate_weight低: 更依赖检索结果
         fused = gate_weights.unsqueeze(1) * current_feat + (1 - gate_weights.unsqueeze(1)) * attn_out
 
         # 8. 残差连接
@@ -376,6 +411,11 @@ class GRAM(nn.Module):
     1. 历史模式检索增强
     2. 自适应知识门控
     3. 突破LLM上下文窗口限制
+
+    创新点:
+    - 通过检索历史相似模式，为预测提供额外参考
+    - 自适应门控机制避免错误检索结果的干扰
+    - 检索上下文可以作为额外Prompt增强LLM理解
     """
 
     def __init__(self, configs):
@@ -418,19 +458,24 @@ class GRAM(nn.Module):
         # 是否启用检索 (训练时可能需要disable)
         self.retrieval_enabled = True
 
+        # 训练步数计数器，用于warmup
+        self.register_buffer('train_step', torch.tensor(0))
+
     @staticmethod
     def _resize_last_dim(tensor, target_dim):
         """
-        将任意形状张量的“最后一维”重采样到 target_dim，前面的维度保持不变。
+        将任意形状张量的"最后一维"重采样到 target_dim
 
         设计目的:
-        1) memory_values 期望是 [..., d_model]，否则后续 Linear(d_model, d_model) 会报维度错误。
-        2) 旧实现在构建记忆库时把插值用在了错误维度，可能产生 [..., 1] 或 [..., 7] 等形状。
+        1) memory_values 期望是 [..., d_model]
+        2) 确保维度一致，避免 Linear 层报错
 
-        实现方式:
-        - 先把张量折叠成 [N, 1, C]（C=原最后一维）
-        - 在 C 这个轴上线性插值到 target_dim
-        - 再恢复回原始前缀维度
+        Args:
+            tensor: 输入张量
+            target_dim: 目标维度
+
+        Returns:
+            resized_tensor: 调整后的张量
         """
         if tensor is None or tensor.shape[-1] == target_dim:
             return tensor
@@ -438,8 +483,7 @@ class GRAM(nn.Module):
         original_shape = tensor.shape
         original_dtype = tensor.dtype
 
-        # F.interpolate(linear) 需要 3D 输入 [N, C, L]；此处固定通道数为1，
-        # 把“最后一维”当作可插值的长度轴处理。
+        # F.interpolate 需要 3D 输入 [N, C, L]
         tensor_3d = tensor.reshape(-1, 1, original_shape[-1]).float()
         resized = F.interpolate(
             tensor_3d,
@@ -452,6 +496,11 @@ class GRAM(nn.Module):
     def build_memory_from_dataloader(self, dataloader, model, device, max_samples=5000):
         """
         从数据加载器构建记忆库
+
+        修复说明:
+        - 使用更有意义的特征表示
+        - 确保维度正确匹配 d_model
+        - 添加详细注释
 
         Args:
             dataloader: 训练数据加载器
@@ -472,26 +521,44 @@ class GRAM(nn.Module):
                 batch_x = batch_x.float().to(device)
                 batch_y = batch_y.float().to(device)
 
-                # 简单使用输入的均值作为特征
-                # 在实际使用中，可以使用模型的中间特征
-                features = batch_x.mean(dim=-1, keepdim=True).expand(-1, -1, self.d_model)
+                # ========== 修复: 使用更有意义的特征表示 ==========
+                B, T, C = batch_x.shape  # [batch, seq_len, n_vars]
 
-                # 取预测部分作为标签
-                labels = batch_y[:, -self.pred_len:, :]
+                # 方案: 对每个变量独立处理，与模型内部Channel Independence一致
+                # [B, T, C] -> [B*C, T]
+                batch_x_flat = batch_x.permute(0, 2, 1).reshape(B * C, T)
 
-                # 关键修复:
-                # 记忆库里检索值 memory_values 必须是 [N, pred_len, d_model]。
-                # 旧代码把 labels.permute 后按 size=d_model 插值，实际上改的是“时间维”，
-                # 会导致最后一维仍是原通道数(如1/7)，进而在 AKG 的 Linear(d_model, d_model)
-                # 处触发:
-                # RuntimeError: mat1 and mat2 shapes cannot be multiplied (...x1 and 64x64)
-                #
-                # 这里统一按“最后一维”对齐，确保 features/labels 最后一维都是 d_model。
-                features = self._resize_last_dim(features, self.d_model)
-                labels = self._resize_last_dim(labels, self.d_model)
+                # 提取统计特征作为表示
+                # 使用多种统计量捕获序列特征
+                mean_feat = batch_x_flat.mean(dim=1, keepdim=True)  # 均值
+                std_feat = batch_x_flat.std(dim=1, keepdim=True)   # 标准差
+                max_feat = batch_x_flat.max(dim=1, keepdim=True)[0]  # 最大值
+                min_feat = batch_x_flat.min(dim=1, keepdim=True)[0]  # 最小值
+
+                # 计算趋势特征
+                diff = batch_x_flat[:, 1:] - batch_x_flat[:, :-1]
+                trend_feat = diff.sum(dim=1, keepdim=True)  # 总体趋势
+
+                # 拼接统计特征
+                stat_features = torch.cat([mean_feat, std_feat, max_feat, min_feat, trend_feat], dim=1)  # [B*C, 5]
+
+                # 扩展到 d_model 维度
+                # 使用重复填充确保维度一致
+                repeat_times = (self.d_model + 4) // 5
+                features = stat_features.repeat(1, repeat_times)[:, :self.d_model]  # [B*C, d_model]
+
+                # 扩展时间维度用于检索
+                features = features.unsqueeze(1).expand(-1, T, -1)  # [B*C, T, d_model]
+
+                # 处理标签
+                labels = batch_y[:, -self.pred_len:, :]  # [B, pred_len, C]
+                labels = labels.permute(0, 2, 1).reshape(B * C, self.pred_len)  # [B*C, pred_len]
+
+                # 扩展标签到 d_model 维度
+                labels_expanded = labels.unsqueeze(-1).expand(-1, -1, self.d_model)  # [B*C, pred_len, d_model]
 
                 all_features.append(features.cpu())
-                all_labels.append(labels.cpu())
+                all_labels.append(labels_expanded.cpu())
                 sample_count += features.shape[0]
 
         if len(all_features) > 0:
@@ -512,25 +579,25 @@ class GRAM(nn.Module):
             context_embed: 检索上下文嵌入 (用于Prompt增强)
             retrieval_info: 检索信息字典 (可选)
         """
+        device = x.device
+
         if not self.retrieval_enabled or self.retriever.memory_keys is None:
             # 检索未启用或记忆库为空
-            context_embed = torch.zeros(x.shape[0], self.d_model, device=x.device)
+            context_embed = torch.zeros(x.shape[0], self.d_model, device=device)
             if return_retrieval_info:
-                return x, context_embed, {'gate_weights': torch.ones(x.shape[0], 1, device=x.device)}
+                return x, context_embed, {'gate_weights': torch.ones(x.shape[0], 1, device=device)}
             return x, context_embed, None
 
         # 1. 检索相似历史模式
         retrieved_refs, similarity_weights, indices = self.retriever.retrieve(x, return_indices=True)
 
         if retrieved_refs is None:
-            context_embed = torch.zeros(x.shape[0], self.d_model, device=x.device)
+            context_embed = torch.zeros(x.shape[0], self.d_model, device=device)
             if return_retrieval_info:
-                return x, context_embed, {'gate_weights': torch.ones(x.shape[0], 1, device=x.device)}
+                return x, context_embed, {'gate_weights': torch.ones(x.shape[0], 1, device=device)}
             return x, context_embed, None
 
-        # 兼容性兜底:
-        # 如果加载的是旧 checkpoint，里面可能已经保存了错误形状的 memory_values
-        # （最后一维不是 d_model）。这里在前向阶段再次对齐，避免训练/推理直接崩溃。
+        # 维度兼容处理
         retrieved_refs = self._resize_last_dim(retrieved_refs, self.d_model)
 
         # 2. 自适应门控融合
@@ -539,7 +606,6 @@ class GRAM(nn.Module):
         )
 
         # 3. 生成检索上下文嵌入 (用于增强Prompt)
-        # 使用加权检索结果的均值
         if retrieved_refs.dim() == 4:
             ref_summary = (retrieved_refs * similarity_weights.unsqueeze(-1).unsqueeze(-1)).sum(dim=1).mean(dim=1)
         else:
@@ -557,42 +623,73 @@ class GRAM(nn.Module):
 
         return enhanced_x, context_embed, None
 
-    def compute_retrieval_loss(self, retrieval_info, predictions, y_true, lambda_ref=0.1):
+    def compute_retrieval_loss(self, retrieval_info, predictions, y_true, lambda_ref=0.1,
+                                warmup_steps=500, current_step=None):
         """
         计算检索增强的辅助损失
+
+        修复说明:
+        1. 添加 device 参数确保返回值在正确设备上
+        2. 添加 warmup 机制防止训练初期干扰
+        3. 优化损失函数设计
 
         Args:
             retrieval_info: forward返回的检索信息
             predictions: 模型预测
             y_true: 真实值
             lambda_ref: 参考一致性损失权重
+            warmup_steps: warmup步数
+            current_step: 当前训练步数
 
         Returns:
             total_loss: 辅助损失
             loss_dict: 损失详情
         """
+        # 获取设备
+        if y_true is not None:
+            device = y_true.device
+        elif predictions is not None:
+            device = predictions.device
+        else:
+            device = 'cpu'
+
         if retrieval_info is None or 'gate_weights' not in retrieval_info:
-            return torch.tensor(0.0), {}
+            return torch.tensor(0.0, device=device), {}
 
         gate_weights = retrieval_info['gate_weights']
 
+        # 1. 门控熵损失
         # 鼓励门控权重的多样性 (避免总是选择同一种策略)
+        # 使用二元熵: -p*log(p) - (1-p)*log(1-p)
         gate_entropy = -(gate_weights * torch.log(gate_weights + 1e-8) +
                         (1 - gate_weights) * torch.log(1 - gate_weights + 1e-8)).mean()
 
-        # 检索一致性: 高置信度时门控权重应该更稳定
+        # 2. 门控一致性损失
+        # 高置信度匹配时，门控权重应该更稳定
         if 'match_scores' in retrieval_info and retrieval_info['match_scores'] is not None:
             match_scores = retrieval_info['match_scores']
             confidence = match_scores.mean(dim=-1, keepdim=True)
+            # 高置信度时鼓励门控权重远离0.5
             gate_consistency = ((gate_weights - 0.5).abs() * confidence).mean()
         else:
-            gate_consistency = torch.tensor(0.0)
+            gate_consistency = torch.tensor(0.0, device=device)
 
-        total_loss = -0.01 * gate_entropy + lambda_ref * gate_consistency
+        # ========== Warmup 机制 ==========
+        if current_step is not None:
+            warmup_factor = min(1.0, current_step / warmup_steps)
+        else:
+            self.train_step += 1
+            warmup_factor = min(1.0, self.train_step.item() / warmup_steps)
+
+        # 总损失
+        # -gate_entropy: 鼓励多样性 (最大化熵)
+        # +gate_consistency: 高置信度时鼓励决断性
+        total_loss = warmup_factor * (-0.01 * gate_entropy + lambda_ref * gate_consistency)
 
         return total_loss, {
             'gate_entropy': gate_entropy.item(),
-            'gate_consistency': gate_consistency.item() if isinstance(gate_consistency, torch.Tensor) else gate_consistency
+            'gate_consistency': gate_consistency.item() if isinstance(gate_consistency, torch.Tensor) else gate_consistency,
+            'warmup_factor': warmup_factor
         }
 
 
@@ -604,6 +701,10 @@ class RetrievalAugmentedPrompt(nn.Module):
     1. 历史相似模式的统计信息
     2. 历史模式后续发展的参考
     3. 置信度指示
+
+    设计理念:
+    - 检索上下文作为额外的Prompt token
+    - 置信度编码让模型知道检索结果的可靠程度
     """
 
     def __init__(self, d_model, llm_dim, dropout=0.1):
@@ -626,8 +727,8 @@ class RetrievalAugmentedPrompt(nn.Module):
             nn.Dropout(dropout)
         )
 
-        # 置信度编码
-        self.confidence_embed = nn.Embedding(10, llm_dim)  # 10个离散置信度级别
+        # 置信度编码 (10个离散级别)
+        self.confidence_embed = nn.Embedding(10, llm_dim)
 
     def forward(self, context_embed, gate_weights=None):
         """
@@ -639,6 +740,7 @@ class RetrievalAugmentedPrompt(nn.Module):
             retrieval_prompt_embed: 检索增强的Prompt嵌入 [B, 2, llm_dim]
         """
         B = context_embed.shape[0]
+        device = context_embed.device
 
         # 1. 投影检索上下文到LLM空间
         context_llm = self.context_to_llm(context_embed)  # [B, llm_dim]
@@ -646,9 +748,11 @@ class RetrievalAugmentedPrompt(nn.Module):
         # 2. 编码置信度
         if gate_weights is not None:
             # 离散化置信度到0-9
-            confidence_level = (gate_weights.squeeze(-1) * 9).long().clamp(0, 9)
+            # gate_weight接近0表示高置信度(依赖检索)
+            # gate_weight接近1表示低置信度(依赖当前)
+            confidence_level = ((1 - gate_weights.squeeze(-1)) * 9).long().clamp(0, 9)
         else:
-            confidence_level = torch.full((B,), 5, dtype=torch.long, device=context_embed.device)
+            confidence_level = torch.full((B,), 5, dtype=torch.long, device=device)
 
         confidence_llm = self.confidence_embed(confidence_level)  # [B, llm_dim]
 

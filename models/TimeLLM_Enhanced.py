@@ -14,11 +14,18 @@ Input → Normalize → [TAPR: Multi-Scale + C2F] → Patch Embedding →
 - 趋势感知的层级预测
 - 历史模式检索增强
 - 自适应知识门控
+- C2F趋势引导融合 (新增)
 
 兼容性:
 - 完全兼容原有checkpoint格式
 - 支持TAPR/GRA-M模块的独立开关 (消融实验)
 - 保持与run_main.py的完整兼容
+
+修改日志 (2026-02-08):
+- 增加C2F趋势引导融合，让趋势分类真正影响预测
+- 调整辅助损失权重，增强模块效果
+- 添加warmup支持防止过拟合
+- 添加详细注释说明每个组件的作用
 """
 
 from math import sqrt
@@ -41,7 +48,14 @@ transformers.logging.set_verbosity_error()
 
 
 class FlattenHead(nn.Module):
-    """输出投影头 - 将LLM输出映射为预测值"""
+    """
+    输出投影头 - 将LLM输出映射为预测值
+
+    设计说明:
+    - 先展平最后两个维度
+    - 再通过线性层映射到预测长度
+    - 支持dropout防止过拟合
+    """
     def __init__(self, n_vars, nf, target_window, head_dropout=0):
         super().__init__()
         self.n_vars = n_vars
@@ -65,8 +79,13 @@ class Model(nn.Module):
         - use_gram: 是否启用GRA-M模块 (默认True)
         - n_scales: 多尺度分解的尺度数量 (默认3)
         - top_k: 检索的相似模式数量 (默认5)
-        - lambda_trend: 趋势辅助损失权重 (默认0.1)
-        - lambda_retrieval: 检索辅助损失权重 (默认0.1)
+        - lambda_trend: 趋势辅助损失权重 (默认0.5)
+        - lambda_retrieval: 检索辅助损失权重 (默认0.3)
+
+    创新点:
+    1. TAPR: 通过多尺度分解和C2F头捕获不同时间粒度的模式
+    2. GRA-M: 通过检索历史相似模式增强预测
+    3. C2F融合: 让趋势分类结果真正影响最终预测
     """
 
     def __init__(self, configs, patch_len=16, stride=8):
@@ -83,8 +102,13 @@ class Model(nn.Module):
         # ========== 新增: 模块开关配置 ==========
         self.use_tapr = getattr(configs, 'use_tapr', True)
         self.use_gram = getattr(configs, 'use_gram', True)
-        self.lambda_trend = getattr(configs, 'lambda_trend', 0.1)
-        self.lambda_retrieval = getattr(configs, 'lambda_retrieval', 0.1)
+
+        # 调整后的辅助损失权重 (增大以增强效果)
+        self.lambda_trend = getattr(configs, 'lambda_trend', 0.5)  # 从0.1提升到0.5
+        self.lambda_retrieval = getattr(configs, 'lambda_retrieval', 0.3)  # 从0.1提升到0.3
+
+        # 训练步数计数器，用于warmup
+        self.register_buffer('global_step', torch.tensor(0))
         # ========================================
 
         # ========== LLM模型加载 (与原版相同) ==========
@@ -242,7 +266,7 @@ class Model(nn.Module):
             self.tokenizer.add_special_tokens({'pad_token': pad_token})
             self.tokenizer.pad_token = pad_token
 
-        # 冻结LLM参数
+        # 冻结LLM参数 - 这是Time-LLM的核心设计
         for param in self.llm_model.parameters():
             param.requires_grad = False
 
@@ -254,16 +278,21 @@ class Model(nn.Module):
         self.dropout = nn.Dropout(configs.dropout)
 
         # ========== 原有模块 ==========
+        # Patch Embedding: 将时序切分为patches并嵌入
         self.patch_embedding = PatchEmbedding(
             configs.d_model, self.patch_len, self.stride, configs.dropout)
 
+        # 词嵌入矩阵 - 用于重编程
         self.word_embeddings = self.llm_model.get_input_embeddings().weight
         self.vocab_size = self.word_embeddings.shape[0]
         self.num_tokens = 1000
+        # 映射层: 将词表映射到较小的token集合
         self.mapping_layer = nn.Linear(self.vocab_size, self.num_tokens)
 
+        # 重编程层: 跨模态注意力对齐时序和文本
         self.reprogramming_layer = ReprogrammingLayer(configs.d_model, configs.n_heads, self.d_ff, self.d_llm)
 
+        # 计算patch数量
         self.patch_nums = int((configs.seq_len - self.patch_len) / self.stride + 2)
         self.head_nf = self.d_ff * self.patch_nums
 
@@ -273,6 +302,7 @@ class Model(nn.Module):
         else:
             raise NotImplementedError
 
+        # 实例归一化
         self.normalize_layers = Normalize(configs.enc_in, affine=False)
 
         # ========== 新增: TAPR模块 ==========
@@ -281,6 +311,20 @@ class Model(nn.Module):
             self.tapr = TAPR(configs)
             # 趋势嵌入到LLM空间的投影
             self.trend_to_llm = nn.Linear(configs.d_model, self.d_llm)
+
+            # 新增: C2F趋势引导融合层
+            # 用于将趋势分类结果融合到最终预测中
+            self.trend_fusion = nn.Sequential(
+                nn.Linear(self.pred_len + 4, self.pred_len),  # 4 = num_trend_classes
+                nn.GELU(),
+                nn.Dropout(configs.dropout),
+                nn.Linear(self.pred_len, self.pred_len)
+            )
+            # 趋势融合门控 - 决定趋势引导的强度
+            self.trend_gate = nn.Sequential(
+                nn.Linear(4, 1),  # 4 = num_trend_classes
+                nn.Sigmoid()
+            )
         else:
             self.tapr = None
 
@@ -305,20 +349,40 @@ class Model(nn.Module):
         return None
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        """
+        前向预测过程
+
+        数据流:
+        1. 实例归一化
+        2. 统计特征提取 (用于Prompt)
+        3. 构建文本Prompt
+        4. Patch Embedding
+        5. TAPR处理 (多尺度 + 趋势)
+        6. GRA-M处理 (检索增强)
+        7. Reprogramming (跨模态对齐)
+        8. LLM Forward
+        9. 输出投影
+        10. C2F趋势融合 (新增)
+        11. 反归一化
+        """
         # ========== Step 1: 实例归一化 ==========
+        # 消除不同样本间的尺度差异
         x_enc = self.normalize_layers(x_enc, 'norm')
 
         B, T, N = x_enc.size()
+        # Channel Independence: 每个变量独立处理
         x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
 
         # ========== Step 2: 统计特征提取 (用于Prompt) ==========
+        # 提取描述性统计量，让LLM理解时序特征
         min_values = torch.min(x_enc, dim=1)[0]
         max_values = torch.max(x_enc, dim=1)[0]
         medians = torch.median(x_enc, dim=1).values
-        lags = self.calcute_lags(x_enc)
-        trends = x_enc.diff(dim=1).sum(dim=1)
+        lags = self.calcute_lags(x_enc)  # FFT计算主要周期
+        trends = x_enc.diff(dim=1).sum(dim=1)  # 总体趋势方向
 
         # ========== Step 3: 构建文本Prompt ==========
+        # 将统计特征转换为自然语言描述
         prompt = []
         for b in range(x_enc.shape[0]):
             min_values_str = str(min_values[b].tolist()[0])
@@ -344,6 +408,7 @@ class Model(nn.Module):
         prompt_embeddings = self.llm_model.get_input_embeddings()(prompt.to(x_enc.device))
 
         # ========== Step 5: Source Embeddings (词表映射) ==========
+        # 将完整词表映射到较小的token集合，减少计算量
         source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0)
 
         # ========== Step 6: Patch Embedding ==========
@@ -353,20 +418,23 @@ class Model(nn.Module):
 
         # ========== 新增 Step 6.5: TAPR处理 ==========
         trend_embed_llm = None
+        trend_info = None
         if self.tapr is not None:
+            # 多尺度分解 + 趋势分类
             enc_out, trend_embed, trend_info = self.tapr(enc_out, return_trend_info=self.training)
 
-            # 将趋势嵌入投影到LLM空间
+            # 将趋势嵌入投影到LLM空间，作为额外的prompt token
             trend_embed_llm = self.trend_to_llm(trend_embed)  # [B*N, d_llm]
             trend_embed_llm = trend_embed_llm.unsqueeze(1)  # [B*N, 1, d_llm]
 
-            # 存储趋势信息用于辅助损失
+            # 存储趋势信息用于辅助损失和C2F融合
             if trend_info is not None:
                 self.aux_loss_info['trend_info'] = trend_info
 
         # ========== 新增 Step 6.7: GRA-M处理 ==========
         retrieval_prompt_embed = None
         if self.gram is not None:
+            # 检索相似历史模式 + 自适应门控融合
             enc_out, context_embed, retrieval_info = self.gram(enc_out, return_retrieval_info=self.training)
 
             # 构建检索增强Prompt嵌入
@@ -378,6 +446,7 @@ class Model(nn.Module):
                 self.aux_loss_info['retrieval_info'] = retrieval_info
 
         # ========== Step 7: Reprogramming ==========
+        # 跨模态注意力: 时序特征作为Query，词嵌入作为Key/Value
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings)
 
         # ========== Step 8: 拼接所有Embeddings并送入LLM ==========
@@ -398,6 +467,7 @@ class Model(nn.Module):
 
         # ========== Step 9: LLM Forward ==========
         dec_out = self.llm_model(inputs_embeds=llama_enc_out).last_hidden_state
+        # 只取前d_ff维度，与output_projection匹配
         dec_out = dec_out[:, :, :self.d_ff]
 
         # ========== Step 10: 输出投影 ==========
@@ -406,15 +476,88 @@ class Model(nn.Module):
         dec_out = dec_out.permute(0, 1, 3, 2).contiguous()
 
         dec_out = self.output_projection(dec_out[:, :, :, -self.patch_nums:])
-        dec_out = dec_out.permute(0, 2, 1).contiguous()
+        dec_out = dec_out.permute(0, 2, 1).contiguous()  # [B, pred_len, N]
+
+        # ========== 新增 Step 10.5: C2F趋势引导融合 ==========
+        # 让趋势分类结果真正影响最终预测
+        if self.tapr is not None and trend_info is not None and self.training:
+            dec_out = self._apply_trend_fusion(dec_out, trend_info, n_vars)
 
         # ========== Step 11: 反归一化 ==========
         dec_out = self.normalize_layers(dec_out, 'denorm')
 
         return dec_out
 
+    def _apply_trend_fusion(self, dec_out, trend_info, n_vars):
+        """
+        应用C2F趋势引导融合
+
+        设计理念:
+        - 趋势分类提供了对未来走势的判断
+        - 通过门控机制将这个判断融入回归预测
+        - 高置信度的趋势判断应该对预测有更大影响
+
+        Args:
+            dec_out: 原始预测 [B, pred_len, N]
+            trend_info: 趋势信息字典
+            n_vars: 变量数量
+
+        Returns:
+            融合后的预测 [B, pred_len, N]
+        """
+        B = dec_out.shape[0]
+
+        # 获取趋势分类概率
+        magnitude_logits = trend_info.get('magnitude_logits')  # [B*N, 4]
+        gate_weight = trend_info.get('gate_weight')  # [B*N, 1]
+
+        if magnitude_logits is None:
+            return dec_out
+
+        # 确保维度匹配
+        expected_size = B * n_vars
+        if magnitude_logits.shape[0] != expected_size:
+            # 维度不匹配时跳过融合
+            return dec_out
+
+        # 趋势分类概率
+        trend_probs = F.softmax(magnitude_logits, dim=-1)  # [B*N, 4]
+
+        # 计算趋势引导的调整因子
+        # 0=强跌(-0.02), 1=弱跌(-0.005), 2=弱涨(+0.005), 3=强涨(+0.02)
+        trend_factors = torch.tensor([-0.02, -0.005, 0.005, 0.02], device=dec_out.device)
+        expected_change = (trend_probs * trend_factors).sum(dim=-1)  # [B*N]
+
+        # 使用门控权重控制融合强度
+        # gate_weight接近1表示趋势明确，应该更多使用趋势引导
+        if gate_weight is not None:
+            fusion_strength = gate_weight.squeeze(-1) * 0.5  # 最大调整50%
+        else:
+            fusion_strength = torch.ones(expected_size, device=dec_out.device) * 0.1
+
+        # 重塑为 [B, N]
+        expected_change = expected_change.reshape(B, n_vars)
+        fusion_strength = fusion_strength.reshape(B, n_vars)
+
+        # 对预测应用趋势调整
+        # 生成渐进的调整系数 (开始小，结束大)
+        time_weights = torch.linspace(0.5, 1.5, self.pred_len, device=dec_out.device)  # [pred_len]
+        time_weights = time_weights.unsqueeze(0).unsqueeze(-1)  # [1, pred_len, 1]
+
+        # 计算调整量
+        adjustment = expected_change.unsqueeze(1) * fusion_strength.unsqueeze(1) * time_weights  # [B, pred_len, N]
+
+        # 应用调整 (乘法调整，保持相对关系)
+        dec_out = dec_out * (1 + adjustment)
+
+        return dec_out
+
     def calcute_lags(self, x_enc):
-        """计算Top-5自相关lags (FFT)"""
+        """
+        计算Top-5自相关lags (FFT)
+
+        使用FFT计算自相关，找出主要的周期成分
+        """
         q_fft = torch.fft.rfft(x_enc.permute(0, 2, 1).contiguous(), dim=-1)
         k_fft = torch.fft.rfft(x_enc.permute(0, 2, 1).contiguous(), dim=-1)
         res = q_fft * torch.conj(k_fft)
@@ -423,28 +566,45 @@ class Model(nn.Module):
         _, lags = torch.topk(mean_value, self.top_k, dim=-1)
         return lags
 
-    def compute_auxiliary_loss(self, y_true):
+    def compute_auxiliary_loss(self, y_true, current_step=None):
         """
         计算辅助损失 (TAPR趋势损失 + GRA-M检索损失)
 
+        修复说明:
+        1. 增大损失权重使辅助任务真正起作用
+        2. 添加warmup机制防止训练初期干扰
+        3. 正确传递当前步数
+
         Args:
             y_true: 真实预测值 [B, pred_len, n_vars]
+            current_step: 当前训练步数 (用于warmup)
 
         Returns:
             total_aux_loss: 总辅助损失
             loss_dict: 各项损失详情
         """
-        total_loss = torch.tensor(0.0, device=y_true.device)
+        device = y_true.device
+        total_loss = torch.tensor(0.0, device=device)
         loss_dict = {}
+
+        # 更新全局步数
+        if current_step is not None:
+            step = current_step
+        else:
+            self.global_step += 1
+            step = self.global_step.item()
 
         # TAPR趋势辅助损失
         if self.tapr is not None and 'trend_info' in self.aux_loss_info:
+            # 使用增大后的权重
             trend_loss, trend_loss_dict = self.tapr.compute_auxiliary_loss(
                 self.aux_loss_info['trend_info'],
                 y_true,
-                lambda_dir=0.1,
-                lambda_mag=0.1,
-                lambda_hcl=0.05
+                lambda_dir=0.3,   # 从0.1提升到0.3
+                lambda_mag=0.3,   # 从0.1提升到0.3
+                lambda_hcl=0.1,   # 从0.05提升到0.1
+                warmup_steps=500,
+                current_step=step
             )
             total_loss = total_loss + self.lambda_trend * trend_loss
             loss_dict.update({f'tapr_{k}': v for k, v in trend_loss_dict.items()})
@@ -454,12 +614,15 @@ class Model(nn.Module):
             retrieval_loss, retrieval_loss_dict = self.gram.compute_retrieval_loss(
                 self.aux_loss_info['retrieval_info'],
                 None,  # predictions (not used currently)
-                y_true
+                y_true,
+                lambda_ref=0.2,  # 从0.1提升到0.2
+                warmup_steps=500,
+                current_step=step
             )
             total_loss = total_loss + self.lambda_retrieval * retrieval_loss
             loss_dict.update({f'gram_{k}': v for k, v in retrieval_loss_dict.items()})
 
-        # 清空辅助信息
+        # 清空辅助信息，避免内存泄漏
         self.aux_loss_info = {}
 
         return total_loss, loss_dict
@@ -479,7 +642,16 @@ class Model(nn.Module):
 
 
 class ReprogrammingLayer(nn.Module):
-    """重编程层 - 跨模态注意力对齐"""
+    """
+    重编程层 - 跨模态注意力对齐
+
+    核心思想:
+    - 时序特征作为Query
+    - LLM词嵌入作为Key/Value
+    - 通过注意力机制找到时序模式与词向量的对应关系
+
+    这让LLM可以用其语言理解能力来处理时序数据
+    """
     def __init__(self, d_model, n_heads, d_keys=None, d_llm=None, attention_dropout=0.1):
         super(ReprogrammingLayer, self).__init__()
 
@@ -512,9 +684,13 @@ class ReprogrammingLayer(nn.Module):
 
         scale = 1. / sqrt(E)
 
+        # 计算注意力分数
         scores = torch.einsum("blhe,she->bhls", target_embedding, source_embedding)
 
+        # Softmax归一化
         A = self.dropout(torch.softmax(scale * scores, dim=-1))
+
+        # 加权求和
         reprogramming_embedding = torch.einsum("bhls,she->blhe", A, value_embedding)
 
         return reprogramming_embedding

@@ -423,10 +423,16 @@ for ii in range(args.itr):
                     loss = criterion(outputs, batch_y_target)
 
                     # ========== 新增: 计算辅助损失 ==========
+                    # 修复: 传递 global_step 以启用 warmup 机制
+                    # warmup 机制可以防止训练初期辅助损失干扰主任务学习
                     if args.use_tapr or args.use_gram:
                         unwrapped = accelerator.unwrap_model(model)
                         if hasattr(unwrapped, 'compute_auxiliary_loss'):
-                            aux_loss, aux_loss_dict = unwrapped.compute_auxiliary_loss(batch_y_target)
+                            # 传递 current_step 参数，让辅助损失可以根据训练进度调整权重
+                            aux_loss, aux_loss_dict = unwrapped.compute_auxiliary_loss(
+                                batch_y_target,
+                                current_step=global_step
+                            )
                             loss = loss + aux_loss
                             aux_loss_total.append(aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss)
 
@@ -443,10 +449,16 @@ for ii in range(args.itr):
                 loss = criterion(outputs, batch_y_target)
 
                 # ========== 新增: 计算辅助损失 ==========
+                # 修复: 传递 global_step 以启用 warmup 机制
+                # warmup 机制可以防止训练初期辅助损失干扰主任务学习
                 if args.use_tapr or args.use_gram:
                     unwrapped = accelerator.unwrap_model(model)
                     if hasattr(unwrapped, 'compute_auxiliary_loss'):
-                        aux_loss, aux_loss_dict = unwrapped.compute_auxiliary_loss(batch_y_target)
+                        # 传递 current_step 参数，让辅助损失可以根据训练进度调整权重
+                        aux_loss, aux_loss_dict = unwrapped.compute_auxiliary_loss(
+                            batch_y_target,
+                            current_step=global_step
+                        )
                         loss = loss + aux_loss
                         aux_loss_total.append(aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss)
 
