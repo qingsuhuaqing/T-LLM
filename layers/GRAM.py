@@ -122,7 +122,7 @@ class PatternValueDualRetriever(nn.Module):
     - 双重检索: 综合两种相似性进行最终匹配
     """
 
-    def __init__(self, d_model, d_repr=128, top_k=5, temperature=0.1, dropout=0.1):
+    def __init__(self, d_model, d_repr=128, top_k=5, temperature=0.1, dropout=0.1, pred_len=96):
         """
         Args:
             d_model: 特征维度
@@ -130,6 +130,7 @@ class PatternValueDualRetriever(nn.Module):
             top_k: 检索的相似模式数量
             temperature: 相似度softmax温度 (越小越尖锐)
             dropout: Dropout比例
+            pred_len: 预测长度 (用于初始化 memory_values 的形状)
         """
         super(PatternValueDualRetriever, self).__init__()
 
@@ -137,6 +138,7 @@ class PatternValueDualRetriever(nn.Module):
         self.d_repr = d_repr
         self.top_k = top_k
         self.temperature = temperature
+        self.pred_len = pred_len
 
         # 模式编码器 - 提取形状特征
         self.pattern_encoder = PatternEncoder(d_model, d_repr, dropout=dropout)
@@ -155,8 +157,9 @@ class PatternValueDualRetriever(nn.Module):
 
         # 历史模式库 (在线构建)
         # 使用register_buffer确保这些tensor随模型保存/加载
-        self.register_buffer('memory_keys', None)  # [M, d_repr] - 检索键
-        self.register_buffer('memory_values', None)  # [M, pred_len, d_model] - 检索值
+        # 修复: 初始化为空tensor而非None，确保checkpoint加载时shape兼容
+        self.register_buffer('memory_keys', torch.zeros(0, d_repr))  # [M, d_repr] - 检索键
+        self.register_buffer('memory_values', torch.zeros(0, pred_len, d_model))  # [M, pred_len, d_model] - 检索值
         self.register_buffer('memory_size', torch.tensor(0))
         self.max_memory_size = 10000  # 最大记忆容量
 
@@ -193,7 +196,8 @@ class PatternValueDualRetriever(nn.Module):
             new_labels: 新样本标签
             update_ratio: 更新比例
         """
-        if self.memory_keys is None:
+        # 修复: 检查记忆库是否为空 (shape[0] == 0 而非 None)
+        if self.memory_keys.shape[0] == 0:
             self.build_memory(new_data, new_labels)
             return
 
@@ -226,7 +230,8 @@ class PatternValueDualRetriever(nn.Module):
             similarity_weights: 相似度权重 [B, top_k]
             indices: 检索索引 (可选)
         """
-        if self.memory_keys is None:
+        # 修复: 检查记忆库是否为空 (shape[0] == 0 而非 None)
+        if self.memory_keys.shape[0] == 0:
             # 记忆库为空时返回None
             return None, None, None
 
@@ -442,7 +447,8 @@ class GRAM(nn.Module):
             d_model=self.d_model,
             d_repr=self.d_repr,
             top_k=self.top_k,
-            dropout=self.dropout
+            dropout=self.dropout,
+            pred_len=self.pred_len  # 传入 pred_len 用于初始化 memory_values 形状
         )
 
         # 自适应知识门控
@@ -581,7 +587,8 @@ class GRAM(nn.Module):
         """
         device = x.device
 
-        if not self.retrieval_enabled or self.retriever.memory_keys is None:
+        # 修复: 检查记忆库是否为空 (shape[0] == 0 而非 None)
+        if not self.retrieval_enabled or self.retriever.memory_keys.shape[0] == 0:
             # 检索未启用或记忆库为空
             context_embed = torch.zeros(x.shape[0], self.d_model, device=device)
             if return_retrieval_info:
