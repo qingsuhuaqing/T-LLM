@@ -104,9 +104,9 @@ SAVE_TOTAL_LIMIT=10
 # ====== 断点续训配置 ======
 
 # 断点续训（第一次训练留空）
-RESUME_FROM=""
+#RESUME_FROM=""
 # 断点续训示例:
-# RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_512_96_TimeLLM_ETTh1_ftM_sl512_ll48_pl96_dm64_nh8_el2_dl1_df128_fc3_ebtimeF_test_0-GPT2_Enhanced_v2/checkpoint"
+RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_512_96_TimeLLM_ETTh1_ftM_sl512_ll48_pl96_dm64_nh8_el2_dl1_df128_fc3_ebtimeF_test_0-GPT2_Enhanced_v2/checkpoint"
 
 # 仅首次恢复时手动覆盖 EarlyStopping 计数（-1=不用）
 RESUME_COUNTER=-1
@@ -275,7 +275,7 @@ LAMBDA_RETRIEVAL=0.001
 
 # 是否构建检索记忆库
 # 首次训练时启用 (1)，断点续训时禁用 (0)
-BUILD_MEMORY=1
+BUILD_MEMORY=0
 
 # 模式表示向量维度
 D_REPR=64
