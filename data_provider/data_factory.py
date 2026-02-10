@@ -20,6 +20,10 @@ def data_provider(args, flag):
     timeenc = 0 if args.embed != 'timeF' else 1
     percent = args.percent
 
+    # v2新增: 获取数据划分参数
+    discard_original_val = getattr(args, 'discard_original_val', False)
+    data_split = getattr(args, 'data_split', '6:2:2')
+
     if flag == 'test':
         shuffle_flag = False
         drop_last = True
@@ -55,7 +59,10 @@ def data_provider(args, flag):
             timeenc=timeenc,
             freq=freq,
             percent=percent,
-            seasonal_patterns=args.seasonal_patterns
+            seasonal_patterns=args.seasonal_patterns,
+            # v2新增: 传递数据划分参数
+            discard_original_val=discard_original_val,
+            data_split=data_split
         )
     sampler = None
     if shuffle_flag:

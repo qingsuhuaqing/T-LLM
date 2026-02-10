@@ -1,0 +1,40 @@
+============================================================
+Time-LLM Enhanced Configuration
+============================================================
+  TAPR (Trend-Aware Patch Router): ENABLED
+    - n_scales: 3
+    - lambda_trend: 0.5
+  GRA-M (Global Retrieval-Augmented Memory): ENABLED
+    - top_k: 5
+    - lambda_retrieval: 0.3
+    - build_memory: True
+============================================================
+[TimeLLM-Enhanced] Initializing TAPR module...
+[TimeLLM-Enhanced] Initializing GRA-M module...
+Building GRA-M retrieval memory bank...
+[TimeLLM-Enhanced] Building retrieval memory bank...
+[TimeLLM-Enhanced] Memory bank built successfully
+Memory bank construction complete
+Epoch: 1 cost time: 2862.7661759853363
+Epoch: 1 | Train Loss: 0.9158024 | Aux Loss: 0.2873843 | Vali Loss: 0.8645015 | Test Loss: 0.4470576 | MAE Loss: 0.4518814
+lr = 0.0000200000
+Updating learning rate to 1.9999999999999998e-05
+Epoch: 2 | Train Loss: 0.7032992 | Aux Loss: 0.2862554 | Vali Loss: 0.7387080 | Test Loss: 0.3862644 | MAE Loss: 0.4114307
+Updating learning rate to 9.999999999999999e-06
+Epoch: 3 | Train Loss: 0.6772795 | Aux Loss: 0.2800282 | Vali Loss: 0.7358135 | Test Loss: 0.3853138 | MAE Loss: 0.4120496
+Updating learning rate to 4.9999999999999996e-06
+Epoch: 4 | Train Loss: 0.6709096 | Aux Loss: 0.2799737 | Vali Loss: 0.7325497 | Test Loss: 0.3804263 | MAE Loss: 0.4091084
+Updating learning rate to 2.4999999999999998e-06
+Resumed at epoch 4, global_step 7028
+Restored EarlyStopping: best_score=-0.7325497457546554, val_loss_min=0.7325497457546554, counter=0
+Epoch: 5 | Train Loss: 0.6682749 | Aux Loss: 0.2799107 | Vali Loss: 0.7519948 | Test Loss: 0.3819855 | MAE Loss: 0.4092418
+EarlyStopping counter: 1 out of 15
+Updating learning rate to 3.125e-05
+Epoch: 6 | Train Loss: 0.6685772 | Aux Loss: 0.2797810 | Vali Loss: 0.7499162 | Test Loss: 0.3871339 | MAE Loss: 0.4126369
+EarlyStopping counter: 2 out of 15
+Updating learning rate to 1.5625e-05
+609it [07:29,  1.35it/s]
+Epoch: 7 | Train Loss: 0.6538630 | Aux Loss: 0.2796183 | Vali Loss: 0.7649427 | Test Loss: 0.3860510 | MAE Loss: 0.4122279
+EarlyStopping counter: 3 out of 15
+Updating learning rate to 7.8125e-06
+

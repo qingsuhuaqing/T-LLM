@@ -14,7 +14,24 @@ class Dataset_ETT_hour(Dataset):
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv',
                  target='OT', scale=True, timeenc=0, freq='h', percent=100,
-                 seasonal_patterns=None):
+                 seasonal_patterns=None,
+                 discard_original_val=False, data_split='6:2:2'):
+        """
+        ETT小时级数据集
+
+        新增参数 (v2):
+            discard_original_val: 是否丢弃原验证集，使用train+test重新划分
+            data_split: 重新划分比例，格式 "train:val:test"，如 "6:2:2"
+
+        原始划分:
+            Train: 0~8640 (12个月)
+            Val: 8640~11520 (4个月) ← 可能存在分布偏移
+            Test: 11520~14400 (4个月)
+
+        discard_original_val=True时:
+            合并 Train+Test = 0~8640 + 11520~14400 (跳过原Val)
+            按 data_split 比例重新划分
+        """
         if size == None:
             self.seq_len = 24 * 4 * 4
             self.label_len = 24 * 4
@@ -35,6 +52,10 @@ class Dataset_ETT_hour(Dataset):
         self.timeenc = timeenc
         self.freq = freq
 
+        # v2新增: 数据划分策略
+        self.discard_original_val = discard_original_val
+        self.data_split = data_split
+
         # self.percent = percent
         self.root_path = root_path
         self.data_path = data_path
@@ -48,13 +69,64 @@ class Dataset_ETT_hour(Dataset):
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
 
-        border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
-        border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
+        if self.discard_original_val:
+            # ========== v2新增: 丢弃原验证集，重新划分 ==========
+            #
+            # 原始划分:
+            #   Train: 0 ~ 8640 (12个月)
+            #   Val: 8640 ~ 11520 (4个月) ← 丢弃
+            #   Test: 11520 ~ 14400 (4个月)
+            #
+            # 新策略:
+            #   有效数据 = 原Train + 原Test = 8640 + 2880 = 11520
+            #   新Train = 有效数据 * train_ratio (从原train取)
+            #   新Val = 原train剩余部分 (保证时间连续)
+            #   新Test = 整个原test
+            #
+            original_train_end = 12 * 30 * 24  # 8640
+            original_val_end = 12 * 30 * 24 + 4 * 30 * 24  # 11520 (丢弃)
+            original_test_end = 12 * 30 * 24 + 8 * 30 * 24  # 14400
 
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
+            # 解析划分比例
+            split_parts = [float(x) for x in self.data_split.split(':')]
+            total_parts = sum(split_parts)
+            train_ratio = split_parts[0] / total_parts  # 0.6
 
-        if self.set_type == 0:
+            # 有效数据总量
+            train_len = original_train_end  # 8640
+            test_len = original_test_end - original_val_end  # 2880
+            usable_len = train_len + test_len  # 11520
+
+            # 计算新train长度 (从原train取)
+            new_train_len = int(usable_len * train_ratio)  # 6912
+            # 新val = 原train剩余部分
+            new_val_len = train_len - new_train_len  # 8640 - 6912 = 1728
+
+            if self.set_type == 0:  # train: 0 ~ new_train_len
+                border1 = 0
+                border2 = new_train_len
+            elif self.set_type == 1:  # val: new_train_len ~ original_train_end
+                border1 = new_train_len - self.seq_len
+                border2 = original_train_end
+            else:  # test: 整个原test区域
+                border1 = original_val_end - self.seq_len
+                border2 = original_test_end
+
+            # 用于scaler的训练数据边界
+            border1s_for_scale = [0, new_train_len]
+            border2s_for_scale = [new_train_len, new_train_len]
+        else:
+            # ========== 原始划分逻辑 ==========
+            border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
+            border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
+
+            border1 = border1s[self.set_type]
+            border2 = border2s[self.set_type]
+
+            border1s_for_scale = border1s
+            border2s_for_scale = border2s
+
+        if self.set_type == 0 and not self.discard_original_val:
             border2 = (border2 - self.seq_len) * self.percent // 100 + self.seq_len
 
         if self.features == 'M' or self.features == 'MS':
@@ -64,7 +136,8 @@ class Dataset_ETT_hour(Dataset):
             df_data = df_raw[[self.target]]
 
         if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
+            # 使用训练数据来拟合scaler
+            train_data = df_data[border1s_for_scale[0]:border2s_for_scale[0]]
             self.scaler.fit(train_data.values)
             data = self.scaler.transform(df_data.values)
         else:
@@ -112,7 +185,15 @@ class Dataset_ETT_minute(Dataset):
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTm1.csv',
                  target='OT', scale=True, timeenc=0, freq='t', percent=100,
-                 seasonal_patterns=None):
+                 seasonal_patterns=None,
+                 discard_original_val=False, data_split='6:2:2'):
+        """
+        ETT分钟级数据集
+
+        新增参数 (v2):
+            discard_original_val: 是否丢弃原验证集，使用train+test重新划分
+            data_split: 重新划分比例，格式 "train:val:test"，如 "6:2:2"
+        """
         if size == None:
             self.seq_len = 24 * 4 * 4
             self.label_len = 24 * 4
@@ -133,6 +214,10 @@ class Dataset_ETT_minute(Dataset):
         self.timeenc = timeenc
         self.freq = freq
 
+        # v2新增: 数据划分策略
+        self.discard_original_val = discard_original_val
+        self.data_split = data_split
+
         self.root_path = root_path
         self.data_path = data_path
         self.__read_data__()
@@ -145,13 +230,53 @@ class Dataset_ETT_minute(Dataset):
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
 
-        border1s = [0, 12 * 30 * 24 * 4 - self.seq_len, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4 - self.seq_len]
-        border2s = [12 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 4 * 30 * 24 * 4, 12 * 30 * 24 * 4 + 8 * 30 * 24 * 4]
+        # ETTm: 15分钟采样，所以乘以4
+        time_unit = 4  # 每小时4个采样点
 
-        border1 = border1s[self.set_type]
-        border2 = border2s[self.set_type]
+        if self.discard_original_val:
+            # ========== v2新增: 丢弃原验证集，重新划分 ==========
+            original_train_end = 12 * 30 * 24 * time_unit
+            original_val_end = 12 * 30 * 24 * time_unit + 4 * 30 * 24 * time_unit
+            original_test_end = 12 * 30 * 24 * time_unit + 8 * 30 * 24 * time_unit
 
-        if self.set_type == 0:
+            split_parts = [float(x) for x in self.data_split.split(':')]
+            total_parts = sum(split_parts)
+            train_ratio = split_parts[0] / total_parts
+
+            train_len = original_train_end
+            test_len = original_test_end - original_val_end
+            usable_len = train_len + test_len
+
+            new_train_len = int(usable_len * train_ratio)
+            new_val_len = train_len - new_train_len
+
+            if self.set_type == 0:  # train
+                border1 = 0
+                border2 = new_train_len
+            elif self.set_type == 1:  # val
+                border1 = new_train_len - self.seq_len
+                border2 = original_train_end
+            else:  # test
+                border1 = original_val_end - self.seq_len
+                border2 = original_test_end
+
+            border1s_for_scale = [0, new_train_len]
+            border2s_for_scale = [new_train_len, new_train_len]
+        else:
+            # ========== 原始划分逻辑 ==========
+            border1s = [0, 12 * 30 * 24 * time_unit - self.seq_len,
+                        12 * 30 * 24 * time_unit + 4 * 30 * 24 * time_unit - self.seq_len]
+            border2s = [12 * 30 * 24 * time_unit,
+                        12 * 30 * 24 * time_unit + 4 * 30 * 24 * time_unit,
+                        12 * 30 * 24 * time_unit + 8 * 30 * 24 * time_unit]
+
+            border1 = border1s[self.set_type]
+            border2 = border2s[self.set_type]
+
+            border1s_for_scale = border1s
+            border2s_for_scale = border2s
+
+        if self.set_type == 0 and not self.discard_original_val:
             border2 = (border2 - self.seq_len) * self.percent // 100 + self.seq_len
 
         if self.features == 'M' or self.features == 'MS':
@@ -161,7 +286,7 @@ class Dataset_ETT_minute(Dataset):
             df_data = df_raw[[self.target]]
 
         if self.scale:
-            train_data = df_data[border1s[0]:border2s[0]]
+            train_data = df_data[border1s_for_scale[0]:border2s_for_scale[0]]
             self.scaler.fit(train_data.values)
             data = self.scaler.transform(df_data.values)
         else:
