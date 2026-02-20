@@ -129,9 +129,9 @@ SAVE_STEPS=1756
 SAVE_TOTAL_LIMIT=5
 
 # 断点续训（第一次留空）
-RESUME_FROM=""
+#RESUME_FROM=""
 # 断点续训示例:
-# RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_512_96_.../checkpoint"
+RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_512_96_TimeLLM_ETTh1_ftM_sl512_ll48_pl96_dm64_nh8_el2_dl1_df128_fc3_ebtimeF_test_0-v3_gpt2_TAPR_GRAM/checkpoint"
 
 # 仅首次恢复时手动覆盖 EarlyStopping 计数（-1=不用）
 RESUME_COUNTER=-1
@@ -327,7 +327,7 @@ D_REPR=64
 # 是否构建检索记忆库
 # 首次训练: 必须设为 1
 # 断点续训: 必须设为 0 (记忆库已在checkpoint中)
-BUILD_MEMORY=1
+BUILD_MEMORY=0
 
 
 # ====== Warmup 参数 ======
