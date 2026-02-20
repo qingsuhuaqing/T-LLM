@@ -123,7 +123,7 @@ LOG_DIR="${PROJECT_DIR}/logs"
 
 # 每 N step 保存一次（0=关闭）
 # ETTh1: ~8500样本, batch_size=16时约531步/epoch
-SAVE_STEPS=0
+SAVE_STEPS=1756
 
 # 只保留最近 N 个 step checkpoint（0=关闭）
 SAVE_TOTAL_LIMIT=5
