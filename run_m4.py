@@ -21,7 +21,7 @@ import os
 os.environ['CURL_CA_BUNDLE'] = ''
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
-from utils.tools import del_files, EarlyStopping, adjust_learning_rate, load_content, test
+from utils.tools import del_files, EarlyStopping, adjust_learning_rate, load_content, test, safe_torch_save
 
 parser = argparse.ArgumentParser(description='Time-LLM')
 

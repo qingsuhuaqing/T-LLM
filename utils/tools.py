@@ -9,6 +9,26 @@ from tqdm import tqdm
 plt.switch_backend('agg')
 
 
+def safe_torch_save(obj, save_path, print_fn=print):
+    """安全保存 checkpoint：原子写入 + 刷盘 + 验证"""
+    tmp_path = save_path + '.tmp'
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, save_path)
+    # 强制刷盘（对 Google Drive FUSE 挂载尤其重要）
+    try:
+        dir_fd = os.open(os.path.dirname(save_path), os.O_RDONLY)
+        os.fsync(dir_fd)
+        os.close(dir_fd)
+    except OSError:
+        pass
+    # 验证
+    if os.path.exists(save_path):
+        size_mb = os.path.getsize(save_path) / (1024 * 1024)
+        print_fn(f'[save] 已落盘: {save_path} ({size_mb:.1f}MB)')
+    else:
+        print_fn(f'[save] ⚠ 警告: 保存后文件不存在! {save_path}')
+
+
 def adjust_learning_rate(accelerator, optimizer, scheduler, epoch, args, printout=True):
     if args.lradj == 'type1':
         lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch - 1) // 1))}
@@ -48,39 +68,42 @@ class EarlyStopping:
         self.delta = delta
         self.save_mode = save_mode
 
+    def _print(self, msg):
+        if self.accelerator is not None:
+            self.accelerator.print(msg)
+        else:
+            print(msg)
+
     def __call__(self, val_loss, model, path, optimizer=None, scheduler=None, epoch=None, global_step=None,
                  rng_state=None, scaler_state=None, sampler_state=None):
         score = -val_loss
         if self.best_score is None:
             self.best_score = score
+            self._print(f'[EarlyStopping] 首次验证, val_loss={val_loss:.6f}, 设为初始最佳')
             if self.save_mode:
                 self.save_checkpoint(val_loss, model, path, optimizer, scheduler, epoch, global_step,
                                      rng_state=rng_state, scaler_state=scaler_state, sampler_state=sampler_state)
         elif score < self.best_score + self.delta:
             self.counter += 1
-            if self.accelerator is None:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            else:
-                self.accelerator.print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            self._print(
+                f'EarlyStopping counter: {self.counter} out of {self.patience} | '
+                f'val_loss={val_loss:.6f}, 历史最佳={self.val_loss_min:.6f}, '
+                f'需 val_loss <= {self.val_loss_min:.6f} 才会更新checkpoint')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
+            old_best = self.val_loss_min
+            self._print(
+                f'[EarlyStopping] ★ 验证改善! val_loss: {old_best:.6f} --> {val_loss:.6f}, '
+                f'counter 重置: {self.counter} --> 0')
             self.best_score = score
+            self.counter = 0
             if self.save_mode:
                 self.save_checkpoint(val_loss, model, path, optimizer, scheduler, epoch, global_step,
                                      rng_state=rng_state, scaler_state=scaler_state, sampler_state=sampler_state)
-            self.counter = 0
 
     def save_checkpoint(self, val_loss, model, path, optimizer=None, scheduler=None, epoch=None, global_step=None,
                         rng_state=None, scaler_state=None, sampler_state=None):
-        if self.verbose:
-            if self.accelerator is not None:
-                self.accelerator.print(
-                    f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-            else:
-                print(
-                    f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-
         if self.accelerator is not None:
             model = self.accelerator.unwrap_model(model)
 
@@ -90,9 +113,9 @@ class EarlyStopping:
             'scheduler': scheduler.state_dict() if scheduler is not None else None,
             'epoch': epoch if epoch is not None else 0,
             'global_step': global_step if global_step is not None else 0,
-            'best_score': self.best_score,      # 新增：保存 best_score 用于断点续训
-            'val_loss_min': val_loss,           # 新增：保存 val_loss_min 用于断点续训
-            'counter': self.counter,            # 新增：保存 EarlyStopping 计数器
+            'best_score': self.best_score,
+            'val_loss_min': val_loss,
+            'counter': self.counter,
         }
         if rng_state is not None:
             ckpt['rng_state'] = rng_state
@@ -100,7 +123,11 @@ class EarlyStopping:
             ckpt['scaler'] = scaler_state
         if sampler_state is not None:
             ckpt['sampler_state'] = sampler_state
-        torch.save(ckpt, os.path.join(path, 'checkpoint'))
+        save_path = os.path.join(path, 'checkpoint')
+        safe_torch_save(ckpt, save_path, print_fn=self._print)
+        self._print(
+            f'[EarlyStopping] Checkpoint 已保存 | '
+            f'epoch={epoch}, val_loss={val_loss:.6f}, best_score={self.best_score:.6f}, counter={self.counter}')
         self.val_loss_min = val_loss
 
 

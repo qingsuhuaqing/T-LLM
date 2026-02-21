@@ -18,7 +18,7 @@ import shutil
 os.environ['CURL_CA_BUNDLE'] = ''
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
-from utils.tools import del_files, EarlyStopping, adjust_learning_rate, vali, load_content
+from utils.tools import del_files, EarlyStopping, adjust_learning_rate, vali, load_content, safe_torch_save
 
 parser = argparse.ArgumentParser(description='Time-LLM')
 
@@ -407,7 +407,8 @@ for ii in range(args.itr):
                     }
                     if scaler is not None:
                         ckpt_payload['scaler'] = scaler.state_dict()
-                    torch.save(ckpt_payload, os.path.join(step_dir, 'checkpoint.pt'))
+                    step_save_path = os.path.join(step_dir, 'checkpoint.pt')
+                    safe_torch_save(ckpt_payload, step_save_path, print_fn=accelerator.print)
                     accelerator.print(f"Saved step checkpoint: {step_dir}")
                     if args.save_total_limit and args.save_total_limit > 0:
                         step_dirs = []
