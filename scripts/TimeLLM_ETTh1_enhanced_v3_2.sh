@@ -131,7 +131,7 @@ SAVE_TOTAL_LIMIT=5
 # 断点续训（第一次留空）
 #RESUME_FROM=""
 # 断点续训示例:
-RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_512_96_TimeLLM_ETTh1_ftM_sl512_ll48_pl96_dm64_nh8_el2_dl1_df128_fc3_ebtimeF_test_0-v3_gpt2_TAPR_GRAM/checkpoint"
+RESUME_FROM="${CHECKPOINTS}/long_term_forecast_ETTh1_512_96_TimeLLM_ETTh1_ftM_sl512_ll48_pl96_dm64_nh8_el2_dl1_df128_fc3_ebtimeF_test_0-v3_gpt2_TAPR_GRAM/checkpoint_step_12292"
 
 # 仅首次恢复时手动覆盖 EarlyStopping 计数（-1=不用）
 RESUME_COUNTER=-1
