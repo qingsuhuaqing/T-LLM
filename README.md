@@ -1,22 +1,24 @@
-# Time-LLM 完整技术文档
+# Time-LLM Enhanced v4 技术文档
 
 > **Time Series Forecasting by Reprogramming Large Language Models**
 >
 > 通过重编程大语言模型实现时间序列预测 | ICLR 2024
+>
+> **Enhanced v4**: 多相多尺度预测 + 增强检索融合
 
 ---
 
 ## 目录
 
 - [一、项目概述](#一项目概述)
-- [二、项目架构](#二项目架构)
-- [三、核心模块详解](#三核心模块详解)
+- [二、v4 创新架构](#二v4-创新架构)
+- [三、v4 模块详解](#三v4-模块详解)
 - [四、数据流与维度变化](#四数据流与维度变化)
 - [五、命令行参数详解](#五命令行参数详解)
-- [六、训练脚本示例](#六训练脚本示例)
+- [六、训练脚本与消融实验](#六训练脚本与消融实验)
 - [七、训练过程与指标](#七训练过程与指标)
-- [八、常见问题与解决方案](#八常见问题与解决方案)
-- [九、创新改进方向](#九创新改进方向)
+- [八、断点续训](#八断点续训)
+- [九、常见问题与解决方案](#九常见问题与解决方案)
 - [十、参考资料](#十参考资料)
 
 ---
@@ -25,720 +27,362 @@
 
 ### 1.1 项目目标
 
-Time-LLM 是一个将**大语言模型 (LLM)** 应用于**时间序列预测**的创新框架。其核心思想是：
+Time-LLM 是一个将**冻结的大语言模型 (LLM)** 应用于**时间序列预测**的框架。核心思想：
 
 - **冻结 LLM 参数**：不修改 LLM 的预训练权重
 - **重编程输入**：将时间序列数据"翻译"成 LLM 能理解的形式
-- **利用 LLM 能力**：借助 LLM 强大的序列建模能力进行预测
+- **利用 LLM 能力**：借助 LLM 的序列建模能力进行预测
 
-### 1.2 核心创新点
+### 1.2 v4 创新点
 
-| 创新点 | 描述 | 优势 |
-|--------|------|------|
-| **Patching** | 将时序切分为固定长度的块 | 降低计算复杂度，类比文本 Token |
-| **Reprogramming** | 通过 Cross-Attention 对齐时序与文本 | 实现跨模态迁移 |
-| **Prompt-as-Prefix** | 动态生成包含统计信息的提示词 | 增强可解释性 |
-| **冻结 LLM** | 仅训练适配层，LLM 参数不变 | 大幅降低训练成本 |
+在原始 Time-LLM 基础上，v4 新增两大创新模块：
 
-### 1.3 适用场景
-
-- **长期预测 (Long-term Forecast)**：预测未来 96/192/336/720 个时间步
-- **短期预测 (Short-term Forecast)**：M4 竞赛数据集
-- **多变量预测 (Multivariate)**：同时预测多个相关变量
-
----
-
-## 二、项目架构
-
-### 2.1 目录结构
-
-```
-Time-LLM/
-├── models/                          # 核心模型定义
-│   ├── TimeLLM.py                  # ★★★ Time-LLM 主模型
-│   ├── Autoformer.py               # 基线模型
-│   └── DLinear.py                  # 基线模型
-│
-├── layers/                          # 神经网络层组件
-│   ├── Embed.py                    # ★★★ PatchEmbedding 实现
-│   ├── StandardNorm.py             # ★★★ 实例归一化层
-│   ├── Transformer_EncDec.py       # Transformer 组件
-│   └── SelfAttention_Family.py     # 注意力机制
-│
-├── data_provider/                   # 数据加载管道
-│   ├── data_factory.py             # ★ 数据集路由器
-│   ├── data_loader.py              # ★★ 数据加载器
-│   └── m4.py                       # M4 数据集加载
-│
-├── utils/                           # 工具函数
-│   ├── tools.py                    # ★ 训练工具
-│   ├── metrics.py                  # ★ 评估指标
-│   └── timefeatures.py             # 时间特征编码
-│
-├── dataset/                         # 数据集目录
-│   ├── ETT-small/                  # ETT 数据集
-│   └── prompt_bank/                # ★★ 领域描述提示词
-│
-├── scripts/                         # 训练脚本
-│   ├── TimeLLM_ETTh1_2.sh          # ETTh1 训练脚本
-│   └── TimeLLM_ETTm1_2.sh          # ETTm1 训练脚本
-│
-├── md/                              # 技术文档
-│   ├── work2.md                    # 深度技术解析
-│   ├── wenti.md                    # 问题汇总
-│   ├── chuangxin.md                # 创新方案
-│   └── Trainable-part.md           # 可训练部分解析
-│
-├── run_main.py                      # ★★★ 主训练入口
-├── run_m4.py                        # M4 短期预测入口
-└── CLAUDE.md                        # Claude Code 指南
-```
-
-### 2.2 模块职责速查
-
-| 模块 | 文件 | 核心职责 |
+| 模块 | 全称 | 核心能力 |
 |------|------|----------|
-| **主模型** | `models/TimeLLM.py` | 定义 Time-LLM 完整架构 |
-| **Patch 嵌入** | `layers/Embed.py` | 时序切块与嵌入 |
-| **归一化** | `layers/StandardNorm.py` | 实例归一化/反归一化 |
-| **数据加载** | `data_provider/data_loader.py` | 读取 CSV、切片、标准化 |
-| **训练循环** | `run_main.py` | 训练/验证/测试流程 |
-| **评估指标** | `utils/metrics.py` | MSE/MAE/RMSE 计算 |
+| **TAPR** | Trend-Aware Patch Router | 多相多尺度预测 + 专家投票融合 |
+| **GRAM** | Global Retrieval-Augmented Memory | 增强检测检索 + 阈值自适应门控 |
+
+### 1.3 版本演进
+
+| 版本 | DM (下采样) | C2F (融合) | PVDR (检测) | AKG (门控) |
+|------|-----------|-----------|------------|-----------|
+| v3 | avg_pool(k不同) | softmax(W)加权 | 3-sigma规则 | 固定sigmoid(C) |
+| **v4** | **多相x[:,p::k,:] (统一k=4)** | **MAD投票 + DWT趋势约束** | **逻辑回归 + 贝叶斯变点** | **PVDR信号阈值自适应** |
+
+**v4 关键改进**:
+- DM: 数据100%保留 (多相分解无信息损失，替代有损的平均池化)
+- C2F: 两阶段融合 (尺度内异常分支剔除 + 跨尺度趋势一致性约束)
+- PVDR: 可学习检测 (6参数逻辑回归替代固定3-sigma规则 + 3参数贝叶斯变点)
+- AKG: 动态门控 (基于极端/变点/置信度信号自适应调整门控强度)
 
 ---
 
-## 三、核心模块详解
+## 二、v4 创新架构
 
-### 3.1 整体数据流程图
+### 2.1 整体流程图
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Time-LLM 完整数据流程                                │
-└─────────────────────────────────────────────────────────────────────────┘
-
-原始时序数据 (CSV 文件)
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [1] 数据加载与预处理 (data_provider/data_loader.py)              │
-│     - StandardScaler 标准化 (使用训练集均值/方差)                │
-│     - 时间特征编码 (月/日/星期/小时)                             │
-│     - 滑动窗口切片                                               │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-输入张量: x_enc [B, seq_len, N_vars] = [4, 512, 7]
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [2] 实例归一化 (layers/StandardNorm.py: Normalize)               │
-│     - 计算每个样本的均值和标准差                                  │
-│     - Z-score 标准化: (x - mean) / std                          │
-│     - 保存统计量用于反归一化                                      │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-归一化数据: x_enc [B, seq_len, N_vars] = [4, 512, 7]
-       │
-       ├────────────────────────────────────────────┐
-       ▼                                            ▼
-┌────────────────────────────┐    ┌─────────────────────────────────┐
-│ [3] Prompt 构建             │    │ [4] Patching                    │
-│ (TimeLLM.py: 276-287)       │    │ (layers/Embed.py: PatchEmbedding)│
-│                             │    │                                 │
-│ 提取统计特征:               │    │ 1. Padding: 边界填充            │
-│ - min, max, median          │    │ 2. Unfold: 滑动窗口切分         │
-│ - trend (上升/下降)         │    │ 3. Reshape: 维度重组            │
-│ - top-5 lags (FFT)          │    │ 4. Conv1D: Token 嵌入           │
-│                             │    │                                 │
-│ 拼接领域描述生成 Prompt     │    │ [4, 512, 7] → [28, 64, 32]     │
-└────────────────────────────┘    └─────────────────────────────────┘
-       │                                            │
-       ▼                                            ▼
-prompt_embeddings                           enc_out (Patch 嵌入)
-[28, ~128, 2048]                           [28, 64, 32]
-       │                                            │
-       │                                            ▼
-       │                          ┌─────────────────────────────────┐
-       │                          │ [5] Reprogramming Layer          │
-       │                          │ (TimeLLM.py: ReprogrammingLayer) │
-       │                          │                                  │
-       │                          │ Cross-Attention:                 │
-       │                          │ - Q: Patch Embeddings (时序)     │
-       │                          │ - K/V: 压缩词表 (文本)           │
-       │                          │                                  │
-       │                          │ [28, 64, 32] → [28, 64, 2048]   │
-       │                          └─────────────────────────────────┘
-       │                                            │
-       ▼                                            ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [6] 拼接 Prompt + Patch Embeddings                               │
-│     llama_enc_out = Concat([prompt_embeddings, enc_out], dim=1)  │
-│     Shape: [28, ~128+64, 2048] = [28, ~192, 2048]                │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [7] LLM Forward (冻结的 LLM Backbone)                            │
-│     - GPT-2 / LLAMA / Qwen 等                                    │
-│     - 参数完全冻结，仅做特征提取                                  │
-│     Output: [28, ~192, 2048]                                     │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [8] 截取 + 重塑                                                  │
-│     - 截取前 d_ff 维: [28, ~192, 32]                             │
-│     - Reshape: [4, 7, 32, ~192]                                  │
-│     - 提取 Patch 部分: [4, 7, 32, 64]                            │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [9] FlattenHead (Output Projection)                              │
-│ (TimeLLM.py: FlattenHead)                                        │
-│     - Flatten: [4, 7, 32*64] = [4, 7, 2048]                      │
-│     - Linear: [4, 7, 2048] → [4, 7, 96]                          │
-│     - Permute: [4, 96, 7]                                        │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-预测结果 (归一化空间): [4, 96, 7]
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ [10] 反归一化 (Denormalize)                                      │
-│      dec_out = dec_out * stdev + mean                            │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-最终预测: [B, pred_len, N_vars] = [4, 96, 7]
+输入时序 [B, T, N]
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ [1] Baseline Time-LLM (冻结LLM前向)                         │
+│     Normalize → Patching → Reprogramming → LLM → FlattenHead│
+│     → pred_s1 [B, pred_len, N]                               │
+└───────────────────────────┬─────────────────────────────────┘
+                            │
+    ┌───────────────────────┼───────────────────────────┐
+    ▼                       ▼                           ▼
+┌────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│ DM v4      │    │ PVDR v4          │    │                  │
+│ 多相多尺度 │    │ 增强双重检索     │    │ x_normed         │
+│            │    │                  │    │ (归一化输入)     │
+│ S2: k=2    │    │ 逻辑极端分类器   │    │                  │
+│   diff变换 │    │ 贝叶斯变点检测   │    │                  │
+│   2分支    │    │ 4模式检索        │    │                  │
+│ S3: k=4    │    │ → hist_refs      │    │                  │
+│   恒等变换 │    │ → pvdr_signals   │    │                  │
+│   4分支    │    └────────┬─────────┘    │                  │
+│ S4: k=4    │             │              │                  │
+│   平滑变换 │             │              │                  │
+│   4分支    │             │              │                  │
+│ S5: k=4    │             ▼              │                  │
+│   趋势变换 │    ┌──────────────────┐    │                  │
+│   4分支    │    │ AKG v4           │    │                  │
+│            │    │ 阈值自适应门控   │    │                  │
+│ 共14分支   │    │                  │    │                  │
+└──────┬─────┘    │ effective_gate = │    │                  │
+       │          │   sigmoid(C)     │    │                  │
+       ▼          │   × (1-ext_adj)  │    │                  │
+┌────────────┐    │   × (1-cp_adj)   │    │                  │
+│ C2F v4     │    │   × conf_adj     │    │                  │
+│ 专家投票   │    │                  │    │                  │
+│            │    │ Fusion Matrix F  │    │                  │
+│ Stage1:    │    │ → final_pred     │    │                  │
+│  MAD投票   │    └────────┬─────────┘    │                  │
+│  → 5个     │             │              │                  │
+│    consolidated          │              │                  │
+│            │             ▼              │                  │
+│ Stage2:    │    ┌──────────────────┐    │                  │
+│  DWT趋势  │    │ Denormalize      │    │                  │
+│  → weighted│    │ 反归一化         │    │                  │
+│    pred    │    │ → 最终输出       │    │                  │
+└──────┬─────┘    └──────────────────┘    │                  │
+       │                   ▲              │                  │
+       └───────────────────┘──────────────┘                  │
 ```
+
+### 2.2 五类可训练矩阵/参数
+
+| 编号 | 名称 | 形状 | 参数量 | 所在模块 |
+|------|------|------|--------|----------|
+| 1 | 参数矩阵 Theta_s | 4个ScaleEncoder | ~100K | DM v4 |
+| 2 | 权重矩阵 W | [5, 96] | 480 | C2F v4 |
+| 3 | 联系矩阵 C | [5, 96] | 480 | AKG v4 |
+| 4 | 融合矩阵 F | [10, 96] | 960 | AKG v4 |
+| 5 | 阈值参数 tau | 12个 | 12 | AKG(3) + LogisticReg(6) + BayesianCP(3) |
+
+### 2.3 损失函数
+
+```
+L_total = L_main + warmup × (λ_consist × L_consist + λ_gate × L_gate + λ_expert × L_expert)
+```
+
+| 损失项 | 公式 | 说明 |
+|--------|------|------|
+| L_main | MSE(pred, true) | 主预测损失 |
+| L_consist | mean(max(0, -cos_sim(approx_s, approx_S5))) | DWT小波趋势一致性 |
+| L_gate | -mean(\|sigmoid(C) - 0.5\|) | 门控决断性正则化 |
+| L_expert | mean(correction_rate_s) | 专家修正率损失 (v4新增) |
 
 ---
 
-### 3.2 PatchEmbedding 详解
+## 三、v4 模块详解
 
-**代码位置**: `layers/Embed.py` 第 160-186 行
+### 3.1 DM v4: PolyphaseMultiScale (多相多尺度预测)
 
-**作用**: 将连续的时间序列切分为固定长度的"块"(Patch)，然后嵌入到低维向量空间。
+**代码位置**: `layers/TAPR_v4.py:185-328`
 
-#### 3.2.1 类定义与参数
+#### 核心思想
+
+用多相分解 `x[:, p::k, :]` 替代平均池化下采样，**数据100%保留**，无信息损失。
+
+#### 尺度配置
 
 ```python
-class PatchEmbedding(nn.Module):
-    def __init__(self, d_model, patch_len, stride, dropout):
-        """
-        参数说明:
-        - d_model: Patch 嵌入后的维度 (如 32)
-        - patch_len: 每个 Patch 的长度 (如 16)
-        - stride: 滑动窗口步长 (如 8，表示 50% 重叠)
-        - dropout: Dropout 比例
-        """
-        super(PatchEmbedding, self).__init__()
-        self.patch_len = patch_len
-        self.stride = stride
-
-        # 边界填充层: 复制最后一个时间步填充 stride 长度
-        self.padding_patch_layer = ReplicationPad1d((0, stride))
-
-        # Token 嵌入: 1D 卷积将 Patch 映射到 d_model 维
-        self.value_embedding = TokenEmbedding(patch_len, d_model)
-
-        self.dropout = nn.Dropout(dropout)
+SCALE_CFG = [
+    (2, 'diff'),       # S2: k=2, 差分变换, 2个分支
+    (4, 'identity'),   # S3: k=4, 恒等变换, 4个分支
+    (4, 'smooth'),     # S4: k=4, 平滑变换, 4个分支
+    (4, 'trend'),      # S5: k=4, 趋势变换, 4个分支
+]
+# S1 (baseline) 由 Time-LLM 主模型处理
+# 总分支数: 2 + 4 + 4 + 4 = 14
 ```
 
-#### 3.2.2 前向传播流程
+#### 前向流程
 
-```python
-def forward(self, x):
-    """
-    输入: x [B, N_vars, seq_len] = [4, 7, 512]
-    输出: (x_embedded, n_vars)
-    """
-    # 步骤 1: 记录变量数
-    n_vars = x.shape[1]  # n_vars = 7
-
-    # 步骤 2: 边界填充
-    # [4, 7, 512] → [4, 7, 512 + 8] = [4, 7, 520]
-    x = self.padding_patch_layer(x)
-
-    # 步骤 3: 滑动窗口切分
-    # unfold(dimension=-1, size=patch_len, step=stride)
-    # [4, 7, 520] → [4, 7, num_patches, patch_len]
-    # num_patches = (520 - 16) / 8 + 1 = 64
-    # [4, 7, 520] → [4, 7, 64, 16]
-    x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-
-    # 步骤 4: 维度重组
-    # [4, 7, 64, 16] → [4*7, 64, 16] = [28, 64, 16]
-    x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
-
-    # 步骤 5: Token 嵌入 (1D 卷积)
-    # [28, 64, 16] → [28, 64, d_model] = [28, 64, 32]
-    x = self.value_embedding(x)
-
-    return self.dropout(x), n_vars
+```
+输入 x_normed [B, T, N]
+    │
+    ├─→ S2 (k=2):
+    │    ├─ phase 0: x[:,0::2,:] → diff → patches → encoder → pred [B, 96, N]
+    │    └─ phase 1: x[:,1::2,:] → diff → patches → encoder → pred [B, 96, N]
+    │
+    ├─→ S3 (k=4):
+    │    ├─ phase 0: x[:,0::4,:] → identity → patches → encoder → pred
+    │    ├─ phase 1: x[:,1::4,:] → identity → patches → encoder → pred
+    │    ├─ phase 2: x[:,2::4,:] → identity → patches → encoder → pred
+    │    └─ phase 3: x[:,3::4,:] → identity → patches → encoder → pred
+    │
+    ├─→ S4 (k=4): smooth变换, 同S3结构
+    └─→ S5 (k=4): trend变换, 同S3结构
 ```
 
-#### 3.2.3 维度变化详解 (以 ETTh1 + seq_len=512 为例)
+**关键**: 同一尺度内的所有分支共享 ScaleEncoder (仅4个 ScaleEncoder，分支内参数共享)。
 
-| 步骤 | 操作 | 输入形状 | 输出形状 | 说明 |
-|------|------|----------|----------|------|
-| 输入 | - | - | `[4, 7, 512]` | B=4, N_vars=7, seq_len=512 |
-| 转置 | permute(0,2,1) | `[4, 7, 512]` | `[4, 512, 7]` | 在 forward 外部执行 |
-| 再转置 | permute(0,2,1) | `[4, 512, 7]` | `[4, 7, 512]` | 进入 PatchEmbedding |
-| 填充 | ReplicationPad1d | `[4, 7, 512]` | `[4, 7, 520]` | 填充 stride=8 |
-| 切分 | unfold | `[4, 7, 520]` | `[4, 7, 64, 16]` | 64 个 Patch，每个长度 16 |
-| 重组 | reshape | `[4, 7, 64, 16]` | `[28, 64, 16]` | 合并 B 和 N_vars |
-| 嵌入 | Conv1d | `[28, 64, 16]` | `[28, 64, 32]` | 映射到 d_model=32 |
-
-#### 3.2.4 关键参数计算公式
+#### 输出格式
 
 ```python
-# Patch 数量计算
-num_patches = (seq_len + stride - patch_len) // stride + 1
-# 例: (512 + 8 - 16) // 8 + 1 = 504 // 8 + 1 = 63 + 1 = 64
-
-# 或使用原始公式 (含 padding)
-num_patches = (seq_len - patch_len) // stride + 2
-# 例: (512 - 16) // 8 + 2 = 62 + 2 = 64
+# 返回
+pred_s1,           # [B, pred_len, N] — 原封不动传回baseline预测
+branch_preds_dict  # {0: [pred_p0, pred_p1],           # S2的2个分支预测
+                   #  1: [pred_p0, ..., pred_p3],       # S3的4个分支预测
+                   #  2: [pred_p0, ..., pred_p3],       # S4的4个分支预测
+                   #  3: [pred_p0, ..., pred_p3]}       # S5的4个分支预测
 ```
 
 ---
 
-### 3.3 Mapping Layer 详解
+### 3.2 C2F v4: ExpertVotingFusion (专家投票融合)
 
-**代码位置**: `models/TimeLLM.py` 第 233-236 行
+**代码位置**: `layers/TAPR_v4.py:335-581`
 
-**作用**: 将 LLM 的大词表压缩为小型可学习的"虚拟词表"。
+#### Stage 1: 尺度内 MAD 投票
 
-#### 3.3.1 初始化
-
-```python
-# 获取 LLM 词嵌入矩阵
-self.word_embeddings = self.llm_model.get_input_embeddings().weight
-# GPT-2: [50257, 768]
-# Qwen 2.5 3B: [151936, 2048]
-
-self.vocab_size = self.word_embeddings.shape[0]  # 50257 或 151936
-self.num_tokens = 1000  # 压缩后的虚拟词表大小 (硬编码)
-
-# 线性层: 词表压缩
-self.mapping_layer = nn.Linear(self.vocab_size, self.num_tokens)
-# GPT-2: Linear(50257, 1000)
-# Qwen: Linear(151936, 1000)
+```
+每个尺度的 k 个分支预测:
+    │
+    ├─ 计算中位数预测 (参考基准)
+    ├─ 计算每分支偏差 (MAD = Median Absolute Deviation)
+    ├─ 偏差 > mad_threshold × MAD → 标记为异常分支
+    ├─ 平均非异常分支 → consolidated_pred
+    └─ 记录修正率 = 被剔除分支数 / 总分支数
 ```
 
-#### 3.3.2 压缩过程
+**特殊处理**: S2 (k=2) 跳过 MAD (仅2个分支，MAD退化)，直接取均值。
 
-```python
-# TimeLLM.py 第 294 行
-source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0)
+#### Stage 2: 跨尺度 DWT 趋势约束
 
-# 详细过程:
-# 1. 原始词嵌入: [vocab_size, llm_dim] = [50257, 768]
-# 2. 转置: [768, 50257]
-# 3. Linear 映射: [768, 50257] @ [50257, 1000] = [768, 1000]
-# 4. 再转置: [1000, 768]
-# 输出: source_embeddings [1000, llm_dim]
+```
+5个 consolidated_preds (S1..S5):
+    │
+    ├─ Haar DWT 分解每个预测 → approx (趋势) + detail (细节)
+    ├─ S5 的 approx 作为参考趋势方向
+    ├─ 计算每尺度趋势与 S5 的 cosine_similarity
+    │
+    ├─ 趋势惩罚: cos_sim < -0.3 → 权重 × decay_factor
+    ├─ 可靠性惩罚: correction_rate > threshold → 权重 × reliability_penalty
+    │
+    └─ softmax(W) × 惩罚 → 重归一化 → 加权求和 → weighted_pred
 ```
 
-#### 3.3.3 为什么需要压缩？
-
-| 原因 | 说明 |
-|------|------|
-| **计算效率** | Cross-Attention 复杂度 O(L×S)，S 从 50257 降为 1000 |
-| **参数效率** | 学习 1000 个与任务相关的语义原型即可 |
-| **领域专用** | 时序预测不需要完整的自然语言词汇 |
-
----
-
-### 3.4 ReprogrammingLayer 详解
-
-**代码位置**: `models/TimeLLM.py` 第 325-363 行
-
-**作用**: 通过 Cross-Attention 将时序 Patch 嵌入"翻译"到 LLM 的嵌入空间。
-
-#### 3.4.1 类定义
+#### Haar DWT 小波分解
 
 ```python
-class ReprogrammingLayer(nn.Module):
-    def __init__(self, d_model, n_heads, d_keys=None, d_llm=None, attention_dropout=0.1):
-        """
-        参数说明:
-        - d_model: Patch 嵌入维度 (如 32)
-        - n_heads: 注意力头数 (如 8)
-        - d_keys: 每个头的维度 (默认 d_model // n_heads = 4)
-        - d_llm: LLM 隐藏层维度 (如 2048)
-        """
-        super(ReprogrammingLayer, self).__init__()
-
-        d_keys = d_keys or (d_model // n_heads)  # d_keys = 32 // 8 = 4
-
-        # Query: 来自时序 Patch
-        self.query_projection = nn.Linear(d_model, d_keys * n_heads)
-        # Linear(32, 4*8) = Linear(32, 32)
-
-        # Key: 来自压缩词表
-        self.key_projection = nn.Linear(d_llm, d_keys * n_heads)
-        # Linear(2048, 32)
-
-        # Value: 来自压缩词表
-        self.value_projection = nn.Linear(d_llm, d_keys * n_heads)
-        # Linear(2048, 32)
-
-        # 输出投影: 映射回 LLM 维度
-        self.out_projection = nn.Linear(d_keys * n_heads, d_llm)
-        # Linear(32, 2048)
-
-        self.n_heads = n_heads
-        self.dropout = nn.Dropout(attention_dropout)
-```
-
-#### 3.4.2 前向传播
-
-```python
-def forward(self, target_embedding, source_embedding, value_embedding):
-    """
-    参数:
-    - target_embedding: Patch 嵌入 [B*N, num_patches, d_model] = [28, 64, 32]
-    - source_embedding: 压缩词表 [num_tokens, d_llm] = [1000, 2048]
-    - value_embedding: 同 source_embedding
-    """
-    B, L, _ = target_embedding.shape  # B=28, L=64
-    S, _ = source_embedding.shape      # S=1000
-    H = self.n_heads                   # H=8
-
-    # Query 投影: [28, 64, 32] → [28, 64, 32] → [28, 64, 8, 4]
-    target_embedding = self.query_projection(target_embedding).view(B, L, H, -1)
-
-    # Key 投影: [1000, 2048] → [1000, 32] → [1000, 8, 4]
-    source_embedding = self.key_projection(source_embedding).view(S, H, -1)
-
-    # Value 投影: [1000, 2048] → [1000, 32] → [1000, 8, 4]
-    value_embedding = self.value_projection(value_embedding).view(S, H, -1)
-
-    # Cross-Attention
-    out = self.reprogramming(target_embedding, source_embedding, value_embedding)
-    # out: [28, 64, 8, 4]
-
-    out = out.reshape(B, L, -1)  # [28, 64, 32]
-
-    return self.out_projection(out)  # [28, 64, 2048]
-```
-
-#### 3.4.3 注意力计算
-
-```python
-def reprogramming(self, target_embedding, source_embedding, value_embedding):
-    B, L, H, E = target_embedding.shape  # [28, 64, 8, 4]
-
-    scale = 1. / sqrt(E)  # 1 / sqrt(4) = 0.5
-
-    # 计算注意力分数
-    # Q: [B, L, H, E] = [28, 64, 8, 4]
-    # K: [S, H, E] = [1000, 8, 4]
-    # einsum("blhe,she->bhls"): [28, 8, 64, 1000]
-    scores = torch.einsum("blhe,she->bhls", target_embedding, source_embedding)
-
-    # Softmax 归一化
-    A = self.dropout(torch.softmax(scale * scores, dim=-1))
-    # A: [28, 8, 64, 1000]
-
-    # 加权聚合 Value
-    # V: [S, H, E] = [1000, 8, 4]
-    # einsum("bhls,she->blhe"): [28, 64, 8, 4]
-    reprogramming_embedding = torch.einsum("bhls,she->blhe", A, value_embedding)
-
-    return reprogramming_embedding
-```
-
-#### 3.4.4 维度变化汇总
-
-| 步骤 | 张量 | 形状 | 说明 |
-|------|------|------|------|
-| 输入 Q | target_embedding | `[28, 64, 32]` | Patch 嵌入 |
-| 输入 K/V | source_embedding | `[1000, 2048]` | 压缩词表 |
-| Q 投影 | - | `[28, 64, 8, 4]` | 分头 |
-| K 投影 | - | `[1000, 8, 4]` | 分头 |
-| V 投影 | - | `[1000, 8, 4]` | 分头 |
-| 注意力 | scores | `[28, 8, 64, 1000]` | Q×K^T |
-| 聚合 | out | `[28, 64, 8, 4]` | Attention×V |
-| 合并 | out | `[28, 64, 32]` | 合并头 |
-| 输出投影 | out | `[28, 64, 2048]` | 映射到 LLM 维度 |
-
----
-
-### 3.5 FlattenHead 详解
-
-**代码位置**: `models/TimeLLM.py` 第 15-27 行
-
-**作用**: 将 LLM 的高维输出映射为时间序列预测值。
-
-#### 3.5.1 类定义
-
-```python
-class FlattenHead(nn.Module):
-    def __init__(self, n_vars, nf, target_window, head_dropout=0):
-        """
-        参数说明:
-        - n_vars: 变量数量 (如 7)
-        - nf: 输入特征维度 = d_ff * num_patches (如 32 * 64 = 2048)
-        - target_window: 预测长度 = pred_len (如 96)
-        - head_dropout: Dropout 比例
-        """
-        super().__init__()
-        self.n_vars = n_vars
-        self.flatten = nn.Flatten(start_dim=-2)  # 展平最后两个维度
-        self.linear = nn.Linear(nf, target_window)  # Linear(2048, 96)
-        self.dropout = nn.Dropout(head_dropout)
-```
-
-#### 3.5.2 前向传播
-
-```python
-def forward(self, x):
-    """
-    输入: x [B, N_vars, d_ff, num_patches] = [4, 7, 32, 64]
-    输出: [B, N_vars, pred_len] = [4, 7, 96]
-    """
-    # 步骤 1: Flatten
-    # [4, 7, 32, 64] → [4, 7, 32*64] = [4, 7, 2048]
-    x = self.flatten(x)
-
-    # 步骤 2: Linear
-    # [4, 7, 2048] → [4, 7, 96]
-    x = self.linear(x)
-
-    # 步骤 3: Dropout
-    x = self.dropout(x)
-
-    return x  # [4, 7, 96]
-```
-
-#### 3.5.3 参数计算
-
-```python
-# 输入维度
-nf = d_ff * num_patches
-# 例: 32 * 64 = 2048
-
-# 参数量
-weight_params = nf * pred_len = 2048 * 96 = 196,608
-bias_params = pred_len = 96
-total_params = 196,704 ≈ 200K
+def dwt_haar_1d(x):  # x: [B, T, N]
+    approx = (x[:, 0::2, :] + x[:, 1::2, :]) / sqrt(2)  # 低频近似
+    detail = (x[:, 0::2, :] - x[:, 1::2, :]) / sqrt(2)  # 高频细节
+    return approx, detail  # 各 [B, T//2, N]
 ```
 
 ---
 
-### 3.6 Normalize 层详解
+### 3.3 PVDR v4: EnhancedDualRetriever (增强双重检索)
 
-**代码位置**: `layers/StandardNorm.py`
+**代码位置**: `layers/GRAM_v4.py:347-557`
 
-**作用**: 实例级归一化与反归一化。
+#### 三个检测/编码组件
 
-#### 3.6.1 类定义
+| 组件 | 类名 | 参数量 | 功能 |
+|------|------|--------|------|
+| 极端分类器 | `LogisticExtremeClassifier` | 6 | 可学习极端数据检测 (Linear(5,1) + sigmoid) |
+| 变点检测器 | `BayesianChangePointDetector` | 3 | 递归二分贝叶斯变点检测 (3个先验超参) |
+| 模式编码器 | `LightweightPatternEncoder` | ~330 | 5统计特征 → d_repr维向量 (Linear(5,64) + LayerNorm) |
 
-```python
-class Normalize(nn.Module):
-    def __init__(self, num_features, eps=1e-5, affine=False):
-        """
-        参数说明:
-        - num_features: 特征数量 (即变量数 N_vars)
-        - eps: 数值稳定性常数
-        - affine: 是否使用可学习的缩放和偏移
-        """
-        super(Normalize, self).__init__()
-        self.num_features = num_features
-        self.eps = eps
-        self.affine = affine
-```
-
-#### 3.6.2 归一化过程
+#### LogisticExtremeClassifier
 
 ```python
-def forward(self, x, mode):
-    """
-    x: [B, seq_len, N_vars] = [4, 512, 7]
-    mode: 'norm' 或 'denorm'
-    """
-    if mode == 'norm':
-        # 计算统计量 (在时间维度上)
-        self._get_statistics(x)
-        x = self._normalize(x)
-    elif mode == 'denorm':
-        x = self._denormalize(x)
-    return x
-
-def _get_statistics(self, x):
-    """计算均值和标准差"""
-    dim2reduce = tuple(range(1, x.ndim - 1))  # dim=(1,) 即时间维度
-    self.mean = torch.mean(x, dim=dim2reduce, keepdim=True)
-    # mean: [4, 1, 7]
-    self.stdev = torch.sqrt(torch.var(x, dim=dim2reduce, keepdim=True) + self.eps)
-    # stdev: [4, 1, 7]
-
-def _normalize(self, x):
-    """Z-score 归一化"""
-    x = x - self.mean  # 减均值
-    x = x / self.stdev  # 除标准差
-    return x
-
-def _denormalize(self, x):
-    """反归一化"""
-    x = x * self.stdev  # 乘标准差
-    x = x + self.mean   # 加均值
-    return x
+# 输入: x [B, T, N]
+# 提取5个统计特征: [mean, std, max, min, trend]
+# → Linear(5, 1) → sigmoid → extreme_prob [B]
 ```
+
+替代 v3 的 3-sigma 固定规则，变为可学习的极端数据判别器。
+
+#### BayesianChangePointDetector
+
+```python
+# 递归二分检测变点位置
+# 对每个候选分割点计算 Bayesian Factor (两段模型 vs 单段模型的似然比)
+# 使用 softmax 加权 (可微分) 替代硬 argmax
+# 关注序列末端 (T × 0.8 之后) 的变点 → near_end_score [B]
+```
+
+3个可学习先验: `prior_mean`, `prior_var`, `noise_var` (后两者通过 softplus 保证正值)。
+
+#### 4 模式检索
+
+| 模式 | 触发条件 | 行为 |
+|------|---------|------|
+| A: Direct | max_sim > 0.95 | Top-1, 无阈值过滤 (极相似直接用) |
+| B: Extreme | extreme_prob > 0.5 | Top-K×2, 降低检索阈值 |
+| C: Turning Point | near_end_score > 0.5 | 标准 Top-K, 优先转折点标签 |
+| D: Normal | 默认 | 标准 Top-K, 标准阈值 |
+
+#### 增强记忆库 (EnhancedMultiScaleMemoryBank)
+
+- 每尺度存储 (key, value, label) 三元组
+- label: 0=normal, 1=extreme, 2=turning_point
+- `build_with_labels()`: 训练时自动标注所有样本
+- `get_subset_by_label()`: 按标签筛选子集用于模式C检索
 
 ---
 
-### 3.7 Prompt 构建详解
+### 3.4 AKG v4: ThresholdAdaptiveGating (阈值自适应门控)
 
-**代码位置**: `models/TimeLLM.py` 第 270-291 行
+**代码位置**: `layers/GRAM_v4.py:564-691`
 
-#### 3.7.1 统计特征提取
-
-```python
-# 第 264-268 行: 计算统计量
-min_values = torch.min(x_enc, dim=1)[0]      # [B*N, 1]
-max_values = torch.max(x_enc, dim=1)[0]      # [B*N, 1]
-medians = torch.median(x_enc, dim=1).values  # [B*N, 1]
-lags = self.calcute_lags(x_enc)              # [B*N, 5] Top-5 自相关 lags
-trends = x_enc.diff(dim=1).sum(dim=1)        # [B*N, 1] 趋势 (差分求和)
-```
-
-#### 3.7.2 Prompt 构建
-
-```python
-# 第 276-287 行
-prompt_ = (
-    f"<|start_prompt|>Dataset description: {self.description}"
-    # 领域描述，从 prompt_bank/{dataset}.txt 加载
-
-    f"Task description: forecast the next {self.pred_len} steps given the previous {self.seq_len} steps information; "
-    # 任务描述
-
-    "Input statistics: "
-    f"min value {min_values_str}, "
-    f"max value {max_values_str}, "
-    f"median value {median_values_str}, "
-    f"the trend of input is {'upward' if trends[b] > 0 else 'downward'}, "
-    f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
-    # 统计信息
-)
-```
-
-#### 3.7.3 示例 Prompt
+#### 门控公式
 
 ```
-<|start_prompt|>Dataset description: The Electricity Transformer Temperature (ETT) is a crucial indicator in the electric power long-term deployment. This dataset consists of 2 years data from two separated counties in China...
+base_gate = sigmoid(C)                        # [n_scales, pred_len]
 
-Task description: forecast the next 96 steps given the previous 512 steps information;
+extreme_adj = sigmoid(10 × (extreme_score - τ_ext))     # [B]
+cp_adj      = sigmoid(10 × (cp_score - τ_cp))           # [B]
+conf_adj    = sigmoid(10 × (confidence - τ_conf))        # [B, n_scales]
 
-Input statistics: min value -1.234, max value 2.567, median value 0.345, the trend of input is upward, top 5 lags are : [24, 48, 72, 96, 168]<|<end_prompt>|>
+effective_gate = base_gate × (1 - extreme_adj) × (1 - cp_adj) × conf_adj
+                                                          # [B, n_scales, pred_len]
 ```
 
-#### 3.7.4 FFT 自相关计算 (calcute_lags)
+| 信号 | 含义 | 对门控的影响 |
+|------|------|-------------|
+| extreme_adj 高 | 当前数据为极端值 | 降低门控 → 更信任历史参考 |
+| cp_adj 高 | 序列末端有变点 | 降低门控 → 更信任历史参考 |
+| conf_adj 高 | 检索置信度高 | 允许更多历史参考 |
 
-```python
-def calcute_lags(self, x_enc):
-    """
-    计算 Top-5 自相关 lags
-    x_enc: [B*N, seq_len, 1]
-    """
-    # FFT 变换
-    q_fft = torch.fft.rfft(x_enc.permute(0, 2, 1).contiguous(), dim=-1)
-    k_fft = torch.fft.rfft(x_enc.permute(0, 2, 1).contiguous(), dim=-1)
+3个可学习阈值: `extreme_threshold`, `cp_threshold`, `conf_threshold` (通过 sigmoid 归一化)。
 
-    # 自相关 = FFT(x) * conj(FFT(x))
-    res = q_fft * torch.conj(k_fft)
+#### 两阶段融合
 
-    # 逆 FFT 得到自相关序列
-    corr = torch.fft.irfft(res, dim=-1)
+```
+Stage 1: 逐尺度门控
+    connected_s = gate × scale_pred + (1-gate) × hist_ref    # 每尺度
 
-    # 取均值后找 Top-5 位置
-    mean_value = torch.mean(corr, dim=1)
-    _, lags = torch.topk(mean_value, self.top_k, dim=-1)
-
-    return lags  # [B*N, 5]
+Stage 2: 融合矩阵
+    all_sources = [scale_preds..., connected...]               # 2×n_scales 个来源
+    → softmax(F) 加权求和 → final_pred
 ```
 
 ---
 
 ## 四、数据流与维度变化
 
-### 4.1 完整维度变化表 (以 ETTh1 + Qwen 2.5 3B 为例)
+### 4.1 Baseline Time-LLM 维度变化
 
-**配置参数:**
-- `batch_size = 4`
-- `seq_len = 512`
-- `pred_len = 96`
-- `N_vars = 7` (enc_in)
-- `patch_len = 16`
-- `stride = 8`
-- `d_model = 32`
-- `d_ff = 32`
-- `llm_dim = 2048`
-- `n_heads = 8`
-- `num_tokens = 1000`
+**配置**: batch=32, seq_len=512, pred_len=96, N_vars=7, d_model=64, d_ff=128, llm_dim=768 (GPT-2)
 
-| 阶段 | 变量名 | 形状 | 维度说明 | 代码位置 |
-|------|--------|------|----------|----------|
-| 输入 | `batch_x` | `[4, 512, 7]` | B, seq_len, N_vars | run_main.py:189 |
-| 归一化后 | `x_enc` | `[4, 512, 7]` | 同上 | TimeLLM.py:259 |
-| 转置 | `x_enc` | `[4, 7, 512]` | B, N_vars, seq_len | TimeLLM.py:262 |
-| Patching 后 | `enc_out` | `[28, 64, 32]` | B*N, num_patches, d_model | Embed.py:185 |
-| Reprogramming 后 | `enc_out` | `[28, 64, 2048]` | B*N, num_patches, llm_dim | TimeLLM.py:299 |
-| Prompt 嵌入 | `prompt_embeddings` | `[28, ~128, 2048]` | B*N, prompt_len, llm_dim | TimeLLM.py:292 |
-| 拼接后 | `llama_enc_out` | `[28, ~192, 2048]` | B*N, total_len, llm_dim | TimeLLM.py:300 |
-| LLM 输出 | `dec_out` | `[28, ~192, 2048]` | 同上 | TimeLLM.py:301 |
-| 截取 d_ff | `dec_out` | `[28, ~192, 32]` | B*N, total_len, d_ff | TimeLLM.py:302 |
-| Reshape | `dec_out` | `[4, 7, 32, ~192]` | B, N, d_ff, total_len | TimeLLM.py:305 |
-| 提取 Patch | `dec_out` | `[4, 7, 32, 64]` | B, N, d_ff, num_patches | TimeLLM.py:308 |
-| Flatten | - | `[4, 7, 2048]` | B, N, d_ff*num_patches | TimeLLM.py:24 |
-| Linear | - | `[4, 7, 96]` | B, N, pred_len | TimeLLM.py:25 |
-| Permute | `dec_out` | `[4, 96, 7]` | B, pred_len, N | TimeLLM.py:309 |
-| 反归一化 | `dec_out` | `[4, 96, 7]` | 最终预测 | TimeLLM.py:311 |
+| 阶段 | 形状 | 说明 |
+|------|------|------|
+| 输入 | `[32, 512, 7]` | B, seq_len, N_vars |
+| 归一化 | `[32, 512, 7]` | instance norm |
+| 转置 | `[32, 7, 512]` | → PatchEmbedding |
+| Patching | `[224, 64, 64]` | B*N=224, num_patches, d_model |
+| Reprogramming | `[224, 64, 768]` | → llm_dim |
+| + Prompt | `[224, ~192, 768]` | prompt_len + num_patches |
+| LLM输出 | `[224, ~192, 768]` | GPT-2 forward |
+| 截取d_ff | `[224, ~192, 128]` | 取前d_ff维 |
+| Reshape | `[32, 7, 128, ~192]` | B, N, d_ff, total_len |
+| FlattenHead | `[32, 7, 96]` | → pred_len |
+| pred_s1 | `[32, 96, 7]` | B, pred_len, N |
 
-### 4.2 关键变量计算公式
+### 4.2 DM v4 分支维度变化 (以 S3, k=4 为例)
 
-```python
-# Patch 数量
-num_patches = (seq_len - patch_len) // stride + 2
-            = (512 - 16) // 8 + 2
-            = 62 + 2
-            = 64
+| 步骤 | 形状 | 说明 |
+|------|------|------|
+| 多相提取 | `[32, 128, 7]` | x[:,0::4,:], T/k=128 |
+| 信号变换 | `[32, 128, 7]` | identity (不变) |
+| Channel-independent | `[224, 128, 1]` | B*N |
+| Patching | `[224, 16, 16]` | num_patches, patch_len |
+| PatchEmbedding | `[224, 16, 64]` | → d_model |
+| Interpolate | `[224, 32, 64]` | 对齐到 expected_patches |
+| ScaleEncoder | `[224, 96]` | → pred_len |
+| Reshape | `[32, 96, 7]` | B, pred_len, N |
 
-# FlattenHead 输入维度
-head_nf = d_ff * num_patches
-        = 32 * 64
-        = 2048
+### 4.3 C2F v4 维度变化
 
-# 展平后的 Batch 大小
-B_N = batch_size * N_vars
-    = 4 * 7
-    = 28
-```
+| 步骤 | 形状 | 说明 |
+|------|------|------|
+| 输入: 14个分支 | 14 × `[32, 96, 7]` | branch_preds_dict |
+| Stage1 投票后 | 5 × `[32, 96, 7]` | consolidated (S1..S5) |
+| DWT分解 | 5 × `[32, 48, 7]` | approx (半长) |
+| softmax(W) | `[5, 96]` | 权重矩阵 |
+| 加权求和 | `[32, 96, 7]` | weighted_pred |
 
-### 4.3 变量名含义速查
+### 4.4 PVDR + AKG v4 维度变化
 
-| 变量名 | 全称 | 含义 |
-|--------|------|------|
-| `B` | Batch size | 批大小，每次处理的样本数 |
-| `N` / `N_vars` | Number of variables | 变量数量，时序的特征维度 |
-| `T` / `seq_len` | Sequence length | 输入序列长度 |
-| `pred_len` | Prediction length | 预测长度/预测步数 |
-| `d_model` | Model dimension | Patch 嵌入维度 |
-| `d_ff` | Feed-forward dimension | 前馈网络维度 |
-| `llm_dim` / `d_llm` | LLM dimension | LLM 隐藏层维度 |
-| `n_heads` / `H` | Number of heads | 注意力头数 |
-| `num_patches` / `L` | Number of patches | Patch 数量 |
-| `patch_len` | Patch length | 每个 Patch 的长度 |
-| `stride` | Stride | 滑动窗口步长 |
-| `vocab_size` | Vocabulary size | LLM 原始词表大小 |
-| `num_tokens` / `S` | Number of tokens | 压缩后虚拟词表大小 |
+| 步骤 | 形状 | 说明 |
+|------|------|------|
+| extreme_prob | `[32]` | 极端概率 |
+| near_end_score | `[32]` | 变点得分 |
+| hist_refs | 5 × `[32, 96, 7]` | 历史参考 |
+| retrieval_confidence | `[32, 5]` | 检索置信度 |
+| effective_gate | `[32, 5, 96]` | 每样本门控 |
+| connected | 5 × `[32, 96, 7]` | 门控混合结果 |
+| all_sources | 10 × `[32, 96, 7]` | scale_preds + connected |
+| fusion_matrix F | `[10, 96]` | 融合权重 |
+| final_pred | `[32, 96, 7]` | 最终预测 |
 
 ---
 
@@ -746,348 +390,252 @@ B_N = batch_size * N_vars
 
 ### 5.1 基础配置参数
 
-| 参数 | 类型 | 默认值 | 说明 | 代码对应 |
-|------|------|--------|------|----------|
-| `--task_name` | str | `long_term_forecast` | 任务类型 | run_main.py:30 |
-| `--is_training` | int | 1 | 是否训练 (1=训练, 0=测试) | run_main.py:32 |
-| `--model_id` | str | - | 实验标识符 | run_main.py:33 |
-| `--model_comment` | str | - | 模型备注，用于保存路径 | run_main.py:34 |
-| `--model` | str | `TimeLLM` | 模型名称 | run_main.py:35 |
-| `--seed` | int | 2021 | 随机种子 | run_main.py:37 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--task_name` | str | `long_term_forecast` | 任务类型 |
+| `--is_training` | int | 1 | 1=训练, 0=测试 |
+| `--model_id` | str | - | 实验标识符 |
+| `--model_comment` | str | - | 模型备注 |
+| `--model` | str | `TimeLLM` | 模型名称 |
+| `--seed` | int | 2021 | 随机种子 |
 
 ### 5.2 数据配置参数
 
-| 参数 | 类型 | 默认值 | 说明 | 代码对应 |
-|------|------|--------|------|----------|
-| `--data` | str | `ETTm1` | 数据集名称 | data_factory.py:4-13 |
-| `--root_path` | str | `./dataset` | 数据根目录 | run_main.py:41 |
-| `--data_path` | str | `ETTh1.csv` | 数据文件名 | run_main.py:42 |
-| `--features` | str | `M` | M=多变量, S=单变量, MS=多变量预测单变量 | data_loader.py:60-64 |
-| `--target` | str | `OT` | 目标变量名 (用于 S/MS) | data_loader.py:64 |
-| `--freq` | str | `h` | 时间频率 (h=小时, t=分钟, d=天) | data_loader.py:82-83 |
-| `--checkpoints` | str | `./checkpoints/` | 模型保存路径 | run_main.py:53 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--data` | str | `ETTm1` | 数据集名称 |
+| `--root_path` | str | `./dataset` | 数据根目录 |
+| `--data_path` | str | `ETTh1.csv` | 数据文件名 |
+| `--features` | str | `M` | M=多变量, S=单变量 |
+| `--seq_len` | int | 96 | 输入序列长度 (v4推荐512) |
+| `--label_len` | int | 48 | 解码器起始token长度 |
+| `--pred_len` | int | 96 | 预测长度 |
 
-### 5.3 序列长度参数
+### 5.3 模型结构参数
 
-| 参数 | 类型 | 默认值 | 说明 | 计算示例 |
-|------|------|--------|------|----------|
-| `--seq_len` | int | 96 | 输入序列长度 | 历史 512 个时间步 |
-| `--label_len` | int | 48 | 解码器起始 token 长度 | 用于 Teacher Forcing |
-| `--pred_len` | int | 96 | 预测长度 | 预测未来 96 个时间步 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--enc_in` | int | 7 | 变量数量 |
+| `--d_model` | int | 16 | Patch嵌入维度 (v4推荐64) |
+| `--n_heads` | int | 8 | 注意力头数 |
+| `--d_ff` | int | 32 | FFN维度 (v4推荐128) |
+| `--patch_len` | int | 16 | Patch长度 |
+| `--stride` | int | 8 | Patch步长 |
+| `--dropout` | float | 0.1 | Dropout比例 |
 
-**序列关系图:**
-```
-|<------ seq_len (512) ------>|
-|__________________|__________|____________|
-   历史输入        label_len   pred_len
-                  (48)        (96)
-```
+### 5.4 LLM 配置参数
 
-### 5.4 模型结构参数
-
-| 参数 | 类型 | 默认值 | 说明 | 代码对应 |
-|------|------|--------|------|----------|
-| `--enc_in` | int | 7 | 编码器输入维度 (变量数) | TimeLLM.py:249 |
-| `--dec_in` | int | 7 | 解码器输入维度 | - |
-| `--c_out` | int | 7 | 输出维度 | - |
-| `--d_model` | int | 16 | Patch 嵌入维度 | TimeLLM.py:231 |
-| `--n_heads` | int | 8 | 注意力头数 | TimeLLM.py:238 |
-| `--d_ff` | int | 32 | 前馈网络维度 | TimeLLM.py:37 |
-| `--e_layers` | int | 2 | 编码器层数 (未使用) | - |
-| `--d_layers` | int | 1 | 解码器层数 (未使用) | - |
-| `--dropout` | float | 0.1 | Dropout 比例 | TimeLLM.py:228 |
-| `--patch_len` | int | 16 | Patch 长度 | TimeLLM.py:40 |
-| `--stride` | int | 8 | Patch 步长 | TimeLLM.py:41 |
-
-### 5.5 LLM 配置参数
-
-| 参数 | 类型 | 默认值 | 说明 | 代码对应 |
-|------|------|--------|------|----------|
-| `--llm_model` | str | `LLAMA` | LLM 类型 (LLAMA/GPT2/BERT/QWEN) | TimeLLM.py:43-211 |
-| `--llm_dim` | int | 4096 | LLM 隐藏层维度 | TimeLLM.py:39 |
-| `--llm_layers` | int | 6 | 使用的 LLM 层数 | TimeLLM.py:60 |
-| `--llm_model_path` | str | `` | 本地模型路径 | TimeLLM.py:43-96 |
-| `--load_in_4bit` | flag | False | 启用 4-bit 量化 | TimeLLM.py:50-57 |
-| `--prompt_domain` | int | 0 | 是否使用领域提示词 (1=是) | TimeLLM.py:223-226 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--llm_model` | str | `LLAMA` | LLM类型 (GPT2/LLAMA/BERT) |
+| `--llm_dim` | int | 4096 | LLM隐藏维度 (GPT-2=768) |
+| `--llm_layers` | int | 6 | 使用的LLM层数 |
+| `--llm_model_path` | str | `''` | 本地模型路径 |
+| `--load_in_4bit` | flag | False | 4-bit量化 |
 
 **LLM 维度对照表:**
 
-| LLM 模型 | llm_dim | 参数量 | 显存需求 (FP16) |
-|----------|---------|--------|-----------------|
+| LLM 模型 | llm_dim | 参数量 | 显存 |
+|----------|---------|--------|------|
 | GPT-2 | 768 | 124M | ~500 MB |
-| BERT-base | 768 | 110M | ~500 MB |
-| LLaMA-7B | 4096 | 7B | ~14 GB |
-| Qwen 2.5 3B | 2048 | 3B | ~6 GB |
 | Qwen 2.5 3B (4-bit) | 2048 | 3B | ~1.5 GB |
+| LLaMA-7B | 4096 | 7B | ~14 GB |
 
-### 5.6 训练配置参数
+### 5.5 TAPR 参数 (DM + C2F)
 
-| 参数 | 类型 | 默认值 | 说明 | 代码对应 |
-|------|------|--------|------|----------|
-| `--num_workers` | int | 10 | DataLoader 工作进程数 | data_factory.py:62 |
-| `--itr` | int | 1 | 实验重复次数 | run_main.py:89 |
-| `--train_epochs` | int | 10 | 训练轮数 | run_main.py:90 |
-| `--batch_size` | int | 32 | 训练批大小 | run_main.py:92 |
-| `--patience` | int | 10 | Early Stopping 耐心值 | run_main.py:94 |
-| `--learning_rate` | float | 0.0001 | 学习率 | run_main.py:95 |
-| `--loss` | str | `MSE` | 损失函数 | run_main.py:97 |
-| `--lradj` | str | `type1` | 学习率调整策略 | tools.py:11-35 |
-| `--use_amp` | flag | False | 混合精度训练 | run_main.py:100 |
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--use_tapr` | flag | False | 启用 DM + C2F |
+| `--n_scales` | int | 5 | 总尺度数 (含baseline) |
+| `--downsample_rates` | str | `1,2,4,4,4` | 各尺度下采样率 (须与DM的k值对齐) |
+| `--lambda_consist` | float | 0.1 | DWT一致性损失权重 |
+| `--decay_factor` | float | 0.5 | 推理时不一致尺度降权因子 |
 
-### 5.7 参数在代码中的使用示例
+### 5.6 GRAM 参数 (PVDR + AKG)
 
-```python
-# run_main.py 中的参数解析
-parser = argparse.ArgumentParser(description='Time-LLM')
-parser.add_argument('--seq_len', type=int, default=96)
-parser.add_argument('--pred_len', type=int, default=96)
-args = parser.parse_args()
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--use_gram` | flag | False | 启用 PVDR + AKG |
+| `--lambda_gate` | float | 0.01 | 门控正则化损失权重 |
+| `--similarity_threshold` | float | 0.8 | 基础检索阈值 |
+| `--extreme_threshold_reduction` | float | 0.2 | 极端数据阈值降低量 |
+| `--top_k` | int | 5 | 检索相似模式数 |
+| `--d_repr` | int | 64 | 模式表示向量维度 |
+| `--build_memory` | flag | False | 构建检索记忆库 (首次须开) |
 
-# TimeLLM.py 中的使用
-class Model(nn.Module):
-    def __init__(self, configs):
-        self.pred_len = configs.pred_len      # 使用 args.pred_len
-        self.seq_len = configs.seq_len        # 使用 args.seq_len
-        self.d_ff = configs.d_ff              # 使用 args.d_ff
+### 5.7 v4 新增参数
 
-        # 计算 Patch 数量
-        self.patch_nums = int((configs.seq_len - self.patch_len) / self.stride + 2)
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--mad_threshold` | float | 3.0 | MAD异常检测倍数 |
+| `--reliability_threshold` | float | 0.3 | 修正率不可靠判定阈值 |
+| `--reliability_penalty` | float | 0.3 | 不可靠尺度降权因子 |
+| `--lambda_expert` | float | 0.05 | 专家修正损失权重 |
+| `--cp_min_segment` | int | 16 | 贝叶斯变点最小段长 |
+| `--cp_max_depth` | int | 4 | 贝叶斯变点最大递归深度 |
 
-        # 计算 FlattenHead 输入维度
-        self.head_nf = self.d_ff * self.patch_nums
+### 5.8 训练配置参数
 
-        # 初始化 FlattenHead
-        self.output_projection = FlattenHead(
-            configs.enc_in,      # n_vars
-            self.head_nf,        # nf = d_ff * num_patches
-            self.pred_len        # target_window
-        )
-```
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--train_epochs` | int | 10 | 训练轮数 (v4推荐50) |
+| `--batch_size` | int | 32 | 批大小 |
+| `--patience` | int | 10 | Early Stopping耐心值 |
+| `--learning_rate` | float | 0.0001 | 学习率 |
+| `--warmup_steps` | int | 500 | 辅助损失warmup步数 |
+| `--save_steps` | int | 0 | 每N步保存checkpoint (0=关闭) |
+| `--save_total_limit` | int | 0 | 最多保留N个step checkpoint |
 
 ---
 
-## 六、训练脚本示例
+## 六、训练脚本与消融实验
 
-### 6.1 完整训练命令 (仅以Qwen 2.5 3B + 4-bit举例)
+### 6.1 v4 训练脚本
 
-```bash
-#!/bin/bash
-# 文件: scripts/TimeLLM_ETTh1_2.sh
-
-cd /mnt/e/timellm/Time-LLM
-
-export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:64"
-
-python run_main.py \
-  --task_name long_term_forecast \
-  --is_training 1 \
-  --root_path ./dataset/ETT-small/ \
-  --data_path ETTh1.csv \
-  --model_id ETTh1_512_96 \
-  --model_comment Qwen3B_fast \
-  --model TimeLLM \
-  --data ETTh1 \
-  --features M \
-  --seq_len 512 \
-  --label_len 48 \
-  --pred_len 96 \
-  --e_layers 2 \
-  --d_layers 1 \
-  --factor 3 \
-  --enc_in 7 \
-  --dec_in 7 \
-  --c_out 7 \
-  --batch_size 4 \
-  --d_model 32 \
-  --n_heads 8 \
-  --d_ff 32 \
-  --llm_dim 2048 \
-  --llm_layers 6 \
-  --num_workers 2 \
-  --prompt_domain 1 \
-  --train_epochs 3 \
-  --itr 1 \
-  --dropout 0.1 \
-  --llm_model QWEN \
-  --llm_model_path /mnt/e/timellm/Time-LLM/base_models/Qwen2.5-3B \
-  --load_in_4bit
-```
-
-### 6.2 参数分组说明
+**文件**: `scripts/TimeLLM_ETTh1_enhanced_v4.sh`
 
 ```bash
-# ========== 任务配置 ==========
---task_name long_term_forecast    # 长期预测任务
---is_training 1                   # 训练模式
---model TimeLLM                   # 使用 Time-LLM 模型
-
-# ========== 数据配置 ==========
---root_path ./dataset/ETT-small/  # 数据目录
---data_path ETTh1.csv             # 数据文件
---data ETTh1                      # 数据集类型
---features M                      # 多变量预测
-
-# ========== 序列配置 ==========
---seq_len 512                     # 输入 512 个时间步
---label_len 48                    # 解码器起始 48 步
---pred_len 96                     # 预测 96 个时间步
-
-# ========== 模型配置 ==========
---enc_in 7                        # 7 个输入变量
---d_model 32                      # Patch 嵌入维度
---d_ff 32                         # 前馈网络维度
---n_heads 8                       # 注意力头数
-
-# ========== LLM 配置 ==========
---llm_model QWEN                  # 使用 Qwen 模型
---llm_dim 2048                    # Qwen 隐藏层维度
---llm_layers 6                    # 使用 6 层 LLM
---llm_model_path .../Qwen2.5-3B   # 本地模型路径
---load_in_4bit                    # 启用 4-bit 量化
-
-# ========== 训练配置 ==========
---batch_size 4                    # 批大小 4
---train_epochs 3                  # 训练 3 轮
---prompt_domain 1                 # 使用领域提示词
---num_workers 2                   # 2 个数据加载进程
+# 完整v4 (TAPR + GRAM)
+bash scripts/TimeLLM_ETTh1_enhanced_v4.sh
 ```
+
+### 6.2 消融实验指南
+
+| 实验 | 命令 | 目的 |
+|------|------|------|
+| E1: Baseline | `USE_TAPR=0 USE_GRAM=0 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh` | 原始Time-LLM |
+| E2: +TAPR v4 | `USE_TAPR=1 USE_GRAM=0 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh` | 仅多相+投票 |
+| E3: +GRAM v4 | `USE_TAPR=0 USE_GRAM=1 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh` | 仅增强检索 |
+| E4: Full v4 | `USE_TAPR=1 USE_GRAM=1 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh` | 完整v4 |
+| E5: v4 vs v3 DM | 分别运行v4和v3脚本, 仅启用TAPR | 多相vs平均池化 |
+| E7: v4 vs v3 PVDR | 分别运行v4和v3脚本, 仅启用GRAM | 逻辑回归vs3-sigma |
+| E9: L_expert | `LAMBDA_EXPERT=0/0.05` 对比 | 专家损失增益 |
+
+### 6.3 参数敏感性实验
+
+| 参数 | 测试值 |
+|------|--------|
+| MAD_THRESHOLD | 2.0, 3.0, 4.0 |
+| RELIABILITY_THRESHOLD | 0.2, 0.3, 0.5 |
+| LAMBDA_EXPERT | 0.01, 0.05, 0.1 |
+| CP_MIN_SEGMENT | 8, 16, 32 |
+| CP_MAX_DEPTH | 2, 4, 6 |
+
 ---
 
 ## 七、训练过程与指标
 
-### 7.1 训练流程
+### 7.1 训练输出示例
+
+```
+======================================================================
+Time-LLM Enhanced v4 — Polyphase Multi-scale + Enhanced Retrieval
+======================================================================
+  TAPR v4 (DM Polyphase + C2F Voting): ENABLED
+    n_scales: 5
+    downsample_rates: 1,2,4,4,4
+    mad_threshold: 3.0
+    reliability_threshold: 0.3
+    lambda_expert: 0.05
+  GRAM v4 (PVDR Enhanced + AKG Threshold): ENABLED
+    top_k: 5
+    cp_min_segment: 16
+    cp_max_depth: 4
+======================================================================
+
+[v4] Building PVDR memory banks (with labels) for all scales...
+[v4] Memory banks built successfully
+
+Epoch 1 | Train Loss: 0.4523 Vali Loss: 0.3912
+  Aux: consist=0.0234 gate=-0.0912 expert=0.1250 warmup=0.25
+```
+
+### 7.2 评估指标
+
+| 指标 | 公式 | 说明 |
+|------|------|------|
+| **MSE** | mean((pred - true)^2) | 均方误差 (主要指标) |
+| **MAE** | mean(\|pred - true\|) | 平均绝对误差 |
+| **RMSE** | sqrt(MSE) | 均方根误差 |
+
+---
+
+## 八、断点续训
+
+### 8.1 可修改参数 (不影响模型形状)
+
+```
+BATCH, NUM_WORKERS, LEARNING_RATE, TRAIN_EPOCHS, PATIENCE
+LAMBDA_CONSIST, LAMBDA_GATE, LAMBDA_EXPERT
+DECAY_FACTOR, MAD_THRESHOLD, RELIABILITY_THRESHOLD, RELIABILITY_PENALTY
+WARMUP_STEPS, TEST_EPOCHS, SAVE_STEPS, SAVE_TOTAL_LIMIT
+```
+
+### 8.2 不可修改参数 (会导致形状不匹配)
+
+```
+LLM_PATH, LLM_DIM, LLM_LAYERS, --llm_model
+SEQ_LEN, LABEL_LEN, PRED_LEN
+D_MODEL, D_FF, N_HEADS, ENC_IN, DEC_IN, C_OUT
+USE_TAPR, USE_GRAM, N_SCALES, D_REPR, DOWNSAMPLE_RATES
+CP_MIN_SEGMENT, CP_MAX_DEPTH
+```
+
+### 8.3 注意事项
+
+- `BUILD_MEMORY` 续训时**必须设为 0** (记忆库已在checkpoint中)
+- v3 和 v4 checkpoint **不兼容** (模块接口变更)
+- 设置 `RESUME_FROM` 指向 checkpoint 路径
+- 设置 `RESUME_COUNTER` 手动覆盖 EarlyStopping 计数 (-1=不覆盖)
+
+### 8.4 推理加载
 
 ```python
-# run_main.py 训练循环 (第 179-267 行)
-for epoch in range(args.train_epochs):
-    model.train()
-
-    for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
-        # 1. 前向传播
-        outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-
-        # 2. 计算损失
-        loss = criterion(outputs, batch_y)  # MSE Loss
-
-        # 3. 反向传播
-        accelerator.backward(loss)
-        model_optim.step()
-
-        # 4. 每 100 次迭代打印
-        if (i + 1) % 100 == 0:
-            print(f"iters: {i+1}, epoch: {epoch+1} | loss: {loss.item():.7f}")
-
-    # 5. 验证与测试
-    vali_loss, vali_mae = vali(model, vali_loader)
-    test_loss, test_mae = vali(model, test_loader)
-
-    # 6. Early Stopping
-    early_stopping(vali_loss, model, path)
+ckpt = torch.load('checkpoints/.../checkpoint')
+model.load_state_dict(ckpt['model'])
+model.eval()
 ```
-
-### 7.2 训练输出示例
-
-```
-Loading checkpoint shards: 100%|████████████| 2/2 [00:10<00:00, 5.35s/it]
-
-iters: 100, epoch: 1 | loss: 0.2009771
-        speed: 1.1923s/iter; left time: 708333.2633s
-iters: 200, epoch: 1 | loss: 1.1028175
-        speed: 1.1227s/iter; left time: 666836.8862s
-...
-
-Epoch: 1 cost time: 3600.45
-Epoch: 1 | Train Loss: 0.4523 Vali Loss: 0.3912 Test Loss: 0.4012 MAE Loss: 0.4567
-
-EarlyStopping counter: 0 out of 10
-Validation loss decreased (inf --> 0.391200). Saving model ...
-
-Epoch: 2 cost time: 3542.12
-Epoch: 2 | Train Loss: 0.3821 Vali Loss: 0.3654 Test Loss: 0.3701 MAE Loss: 0.4321
-...
-
-Epoch: 10 | Train Loss: 0.1987 Vali Loss: 0.2012 Test Loss: 0.2034 MAE Loss: 0.3678
-```
-
-### 7.3 评估指标说明
-
-| 指标 | 公式 | 含义 | 代码位置 |
-|------|------|------|----------|
-| **MSE** | $\frac{1}{N}\sum(y_{pred} - y_{true})^2$ | 均方误差 | metrics.py:18-19 |
-| **MAE** | $\frac{1}{N}\sum|y_{pred} - y_{true}|$ | 平均绝对误差 | metrics.py:14-15 |
-| **RMSE** | $\sqrt{MSE}$ | 均方根误差 | metrics.py:22-23 |
-| **MAPE** | $\frac{1}{N}\sum|\frac{y_{pred} - y_{true}}{y_{true}}|$ | 平均绝对百分比误差 | metrics.py:26-27 |
-
-### 7.4 Checkpoint 保存
-
-**保存位置:**
-```
-checkpoints/
-└── long_term_forecast_ETTh1_512_96_TimeLLM_ETTh1_ftM_sl512_ll48_pl96_dm32_nh8_el2_dl1_df32_fc3_ebtimeF_test_0-Qwen3B_fast/
-    └── checkpoint
-```
-
-**保存内容 (仅可训练参数):**
-- `patch_embedding.*`: PatchEmbedding 参数 (~800)
-- `mapping_layer.*`: Mapping Layer 参数 (~150M for Qwen)
-- `reprogramming_layer.*`: Reprogramming Layer 参数 (~6M)
-- `output_projection.*`: FlattenHead 参数 (~200K)
-
-**文件大小:** 约 200-600 MB (取决于 LLM 词表大小)
 
 ---
 
-## 八、常见问题与解决方案
+## 九、常见问题与解决方案
 
-### 8.1 环境问题
+### 9.1 OOM 处理优先级
+
+| 优先级 | 操作 | 范围 |
+|--------|------|------|
+| 1 | 降 BATCH | 32 → 16 → 8 → 4 |
+| 2 | 降 SEQ_LEN | 512 → 384 → 256 |
+| 3 | 降 D_FF | 128 → 64 → 32 |
+| 4 | 降 D_MODEL | 64 → 32 |
+| 5 | 降 N_SCALES | 5 → 3 |
+| 6 | 降 TOP_K | 5 → 3 |
+| 7 | 禁用 GRAM | USE_GRAM=0 |
+| 8 | 降 LLM_LAYERS | 12 → 6 → 4 |
+
+### 9.2 常见问题
 
 | 问题 | 解决方案 |
 |------|----------|
-| `KeyError: 'qwen2'` | `pip install "transformers>=4.40.0" --upgrade` |
 | `CUDA_HOME does not exist` | `pip uninstall deepspeed -y` |
-| `DeepSpeed is not installed` | 修改 run_main.py 第 107 行，移除 `deepspeed_plugin` |
+| dtype不匹配 (bfloat16/float32) | 模型代码中已修复 (`.float()`) |
+| v3 checkpoint加载v4 | 不兼容，须重新训练 |
+| Shell脚本语法错误 | `sed -i 's/\r$//' scripts/*.sh` (CRLF修复) |
+| DOWNSAMPLE_RATES错误 | 必须是 `1,2,4,4,4` (与DM多相k值对齐) |
 
-### 8.2 数据类型问题
+### 9.3 显存估算 (GPT-2 + v4, batch=32)
 
-| 问题 | 解决方案 |
-|------|----------|
-| `Input type mismatch (BFloat16 vs Float32)` | 修改 TimeLLM.py 第 297-298 行，使用 `.float()` 转换 |
-
-### 8.3 显存不足 (OOM)
-
-**调整优先级:**
-1. 降低 `--batch_size` (4 → 2)
-2. 减少 `--llm_layers` (6 → 4)
-3. 缩短 `--seq_len` (512 → 256)
-4. 降低 `--d_ff` (32 → 16)
-
-### 8.4 详细问题文档
-
-请参考 `md/wenti.md` 获取完整的问题汇总和解决方案。
-
----
-
-## 九、创新改进方向
-
-### 9.1 已提出的创新方案
-
-| 方案 | 灵感来源 | 预期收益 | 难度 |
-|------|----------|----------|------|
-| **多尺度分解** | TimeMixer | 5-10% MSE↓ | ⭐⭐⭐ |
-| **变量间注意力** | iTransformer | 8-15% MSE↓ | ⭐⭐ |
-| **动态 Prompt** | AutoTimes | 10-20% MSE↓ | ⭐⭐⭐ |
-| **稀疏专家混合** | Time-MoE | 模型容量提升 | ⭐⭐⭐⭐ |
-| **频域增强** | TimesNet | 10-15% MSE↓ | ⭐⭐ |
-
-### 9.2 推荐实施路径
-
-1. **首先**: 实现变量间注意力 (改动小，收益高)
-2. **其次**: 实现频域增强 (对周期性数据效果好)
-3. **最后**: 实现多尺度分解 (全面提升)
-
-### 9.3 详细创新文档
-
-请参考 `md/chuangxin.md` 获取完整的创新方案设计和代码示例。
+```
+GPT-2 (FP32, 12层):               ~0.5 GB
+可训练参数:                        ~0.3 GB
+DM v4 (4 ScaleEncoders):          ~2 MB
+C2F v4 (weight_matrix + DWT):     < 1 KB
+PVDR v4 (memory + detectors):     ~5.3 MB
+AKG v4 (matrices + thresholds):   < 1 KB
+中间张量:                          ~0.8 GB
+系统开销:                          ~1.0 GB
+总计:                              ~2.6 GB
+```
 
 ---
 
@@ -1095,52 +643,36 @@ checkpoints/
 
 ### 10.1 论文
 
-- **Time-LLM**: [Time Series Forecasting by Reprogramming Large Language Models](https://arxiv.org/abs/2310.01728) (ICLR 2024)
-- **iTransformer**: [Inverted Transformers Are Effective for Time Series Forecasting](https://arxiv.org/abs/2310.06625) (ICLR 2024)
-- **TimeMixer**: [TimeMixer: Decomposable Multiscale Mixing for Time Series Forecasting](https://arxiv.org/abs/2405.14616) (ICLR 2024)
-- **PatchTST**: [A Time Series is Worth 64 Words](https://arxiv.org/abs/2211.14730) (ICLR 2023)
+- **Time-LLM**: Time Series Forecasting by Reprogramming Large Language Models (ICLR 2024)
+- **TimeMixer**: Decomposable Multiscale Mixing for Time Series Forecasting (ICLR 2024)
+- **N-HiTS**: Neural Hierarchical Interpolation for Time Series Forecasting (AAAI 2023)
+- **PatchTST**: A Time Series is Worth 64 Words (ICLR 2023)
+- **Autoformer**: Decomposition Transformers with Auto-Correlation (NeurIPS 2021)
+- **TFT**: Temporal Fusion Transformers (IJF 2021)
+- **BOCPD**: Bayesian Online Changepoint Detection (Adams & MacKay, 2007)
 
-### 10.2 代码库
-
-- **Time-LLM 原始仓库**: https://github.com/KimMeen/Time-LLM
-- **Time-Series-Library**: https://github.com/thuml/Time-Series-Library
-- **数据集下载**: [Google Drive](https://drive.google.com/drive/folders/1ZOYpTUa82_jCcxIdTmyr0LXQfvaM9vIy)
-
-### 10.3 项目文档
+### 10.2 项目文档
 
 | 文档 | 内容 |
 |------|------|
-| `README.md` | 本文档，完整项目指南 |
-| `CLAUDE.md` | Claude Code 快速参考 |
-| `md/work2.md` | 深度技术解析 |
-| `md/wenti.md` | 问题汇总 |
-| `md/chuangxin.md` | 创新方案 |
-| `md/Trainable-part.md` | 可训练部分详解 |
-| `md/mingling.md` | 命令参数详解 |
+| `CLAUDE.md` | Claude Code 快速参考指南 |
+| `README.md` | 本文档 (完整技术文档) |
+| `claude_v4_readme.md` | v4 架构设计文档 (权威规格说明) |
+| `md/work2.md` | 深度技术解析 (baseline) |
+| `md/wenti.md` | 故障排除汇总 |
+| `md/chuangxin.md` | 创新方案概述 |
+
+### 10.3 代码入口
+
+| 文件 | 用途 |
+|------|------|
+| `run_main_enhanced_v4.py` | **v4 训练入口** (当前使用) |
+| `scripts/TimeLLM_ETTh1_enhanced_v4.sh` | **v4 训练脚本** (当前使用) |
+| `run_main.py` | 原始 Time-LLM 训练入口 |
 
 ---
 
-## 附录: 可训练参数汇总
-
-### A.1 参数量统计
-
-| 组件 | 形状 | 参数量 | 占比 |
-|------|------|--------|------|
-| **PatchEmbedding** | Conv1d(16, 32, 3) | ~1,500 | <0.01% |
-| **Mapping Layer** | Linear(151936, 1000) | ~152M | 96% |
-| **Reprogramming Layer** | 4 个 Linear | ~6M | 4% |
-| **FlattenHead** | Linear(2048, 96) | ~200K | 0.1% |
-| **总计 (Qwen 2.5 3B)** | - | **~158M** | 100% |
-
-### A.2 冻结参数
-
-| 组件 | 参数量 | 说明 |
-|------|--------|------|
-| **Qwen 2.5 3B (4-bit)** | 3B | 完全冻结，仅做特征提取 |
-
----
-
-**文档版本**: v2.0
-**最后更新**: 2026-01-09
-**适用环境**: WSL + NVIDIA 6GB GPU + Qwen 2.5 3B (4-bit)
-**作者**: Zhenda Wang 
+**文档版本**: v4.0
+**最后更新**: 2026-02-24
+**当前版本**: Enhanced v4 (PolyphaseMultiScale + ExpertVotingFusion + EnhancedDualRetriever + ThresholdAdaptiveGating)
+**适用环境**: GPT-2 (本地) / Qwen 2.5 3B (4-bit) + CUDA GPU

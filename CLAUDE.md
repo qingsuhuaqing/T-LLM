@@ -1,6 +1,6 @@
 # CLAUDE.md - Project Guide / 项目指南
 
-> **Purpose / 目的**: This file provides comprehensive guidance to Claude Code for understanding and working with this Time-LLM research project.
+> **Purpose / 目的**: This file provides comprehensive guidance to Claude Code for understanding and working with this Time-LLM Enhanced v4 research project.
 > 本文件为 Claude Code 提供全面的项目理解和工作指南。
 
 ---
@@ -9,394 +9,428 @@
 
 1. [Project Overview / 项目概述](#1-project-overview--项目概述)
 2. [Project Status / 项目状态](#2-project-status--项目状态)
-3. [Documentation Index / 文档索引](#3-documentation-index--文档索引)
-4. [Innovation Points / 创新点](#4-innovation-points--创新点)
-5. [Architecture & Trainable Parameters / 架构与可训练参数](#5-architecture--trainable-parameters--架构与可训练参数)
-6. [Hardware Constraints / 硬件限制](#6-hardware-constraints--硬件限制)
+3. [v4 Architecture / v4 架构](#3-v4-architecture--v4-架构)
+4. [Trainable Parameters / 可训练参数](#4-trainable-parameters--可训练参数)
+5. [Code Structure / 代码结构](#5-code-structure--代码结构)
+6. [Key Code Locations / 关键代码位置](#6-key-code-locations--关键代码位置)
 7. [Common Commands / 常用命令](#7-common-commands--常用命令)
-8. [Code Structure / 代码结构](#8-code-structure--代码结构)
-9. [Troubleshooting / 故障排除](#9-troubleshooting--故障排除)
+8. [CLI Parameters / 命令行参数](#8-cli-parameters--命令行参数)
+9. [Checkpoint & Resume / 断点续训](#9-checkpoint--resume--断点续训)
+10. [Troubleshooting / 故障排除](#10-troubleshooting--故障排除)
 
 ---
 
 ## 1. Project Overview / 项目概述
 
-### What is Time-LLM? / Time-LLM 是什么？
+Time-LLM is a framework that reprograms frozen LLMs for time series forecasting (ICLR 2024). This project extends it with two innovation modules:
 
-Time-LLM is a framework that reprograms frozen Large Language Models (LLMs) for time series forecasting. Instead of training from scratch, it leverages the pattern recognition capabilities of pre-trained LLMs.
+- **TAPR** (Trend-Aware Patch Router): Multi-scale prediction + cross-scale fusion
+- **GRAM** (Global Retrieval-Augmented Memory): Historical pattern retrieval + adaptive gating
 
-Time-LLM 是一个将冻结的大语言模型（LLM）重编程用于时间序列预测的框架。它不从零开始训练，而是利用预训练 LLM 的模式识别能力。
+The project has evolved through 4 versions. **v4 is the current active version**.
 
-### Core Mechanisms / 核心机制
+### Version History / 版本历史
 
-```
-Time Series Data / 时序数据
-    │
-    ▼
-[1. Patching] - Split into patches / 切分为块
-    │
-    ▼
-[2. Patch Embedding] - Project to d_model dimension / 投影到 d_model 维度
-    │
-    ▼
-[3. Reprogramming Layer] - Cross-attention alignment / 交叉注意力对齐
-    │         Query: Patch embeddings (time series domain / 时序域)
-    │         Key/Value: LLM word embeddings (text domain / 文本域)
-    │
-    ▼
-[4. Prompt-as-Prefix] - Prepend statistical prompts / 前缀统计提示
-    │         min, max, median, trend, top-5 lags (FFT)
-    │
-    ▼
-[5. Frozen LLM Forward] - GPT-2/Qwen/LLAMA processes embeddings / 冻结LLM处理嵌入
-    │
-    ▼
-[6. Output Projection] - FlattenHead maps to pred_len / 输出投影到预测长度
-    │
-    ▼
-Prediction / 预测结果
-```
-
-### Key Insight / 核心洞察
-
-**Input Reprogramming / 输入重编程**: Maps time series to LLM's word embedding space via learned projection, making LLM treat time series as "special text features".
-
-通过可学习投影将时序映射到 LLM 词向量空间，使 LLM 将时序视为"特殊文本特征"。
-
-**Prompt Reprogramming / 提示重编程**: Encodes statistical features (mean, variance, trend) as natural language prompts, activating LLM's inherent trend recognition capabilities.
-
-将统计特征编码为自然语言提示，激活 LLM 内在的趋势识别能力。
+| Version | DM (下采样) | C2F (融合) | PVDR (检测) | AKG (门控) |
+|---------|------------|-----------|------------|-----------|
+| v3 | avg_pool(k不同) | softmax(W)直接加权 | 3-sigma规则 | 固定sigmoid(C) |
+| **v4** | **多相x[:,p::k,:] (统一k=4)** | **MAD投票 + DWT趋势约束** | **逻辑回归 + 贝叶斯变点** | **PVDR信号阈值自适应** |
 
 ---
 
 ## 2. Project Status / 项目状态
 
-### Completed Work / 已完成工作
+### Completed / 已完成
 
-| Task / 任务 | Status / 状态 | Details / 详情 |
-|-------------|---------------|----------------|
-| Paper reproduction / 论文复现 | ✅ Done / 完成 | ETTh1, ETTm1 datasets verified / 已验证 |
-| Environment setup / 环境搭建 | ✅ Done / 完成 | 6GB VRAM adaptation / 6GB显存适配 |
-| Model replacement / 模型替换 | ✅ Done / 完成 | GPT-2 → Qwen 2.5 3B (4-bit) |
-| Code fixes / 代码修复 | ✅ Done / 完成 | 4 critical bugs fixed / 4个关键bug已修复 |
-| Innovation design / 创新设计 | ✅ Done / 完成 | 7 schemes documented / 7个方案已文档化 |
-| Thesis proposal / 开题报告 | ✅ Done / 完成 | `report.md`, `baogao.md` |
+| Task / 任务 | Status / 状态 |
+|-------------|---------------|
+| Paper reproduction (ETTh1, ETTm1) / 论文复现 | Done |
+| Environment setup (6GB VRAM) / 环境搭建 | Done |
+| GPT-2 + Qwen 2.5 3B (4-bit) adaptation / 模型适配 | Done |
+| v3 implementation / v3 实现 | Done |
+| **v4 implementation / v4 实现** | **Done** |
+| v4 verification (shape/gradient/syntax) / v4 验证 | Done |
 
-### Pending Work / 待完成工作
+### Pending / 待完成
 
-| Task / 任务 | Priority / 优先级 | Document / 文档 |
-|-------------|-------------------|-----------------|
-| Implement Scheme 1 (Hybrid Model) / 实现方案一（混合模型） | 🥇 High / 高 | `md/chuangxin-jieshi1.md` |
-| Implement Inter-Variate Attention / 实现变量间注意力 | 🥈 High / 高 | `md/chuangxin-shijian.md` |
-| Ablation experiments / 消融实验 | 🥉 Medium / 中 | - |
-| Thesis writing / 论文撰写 | Medium / 中 | - |
-
----
-
-## 3. Documentation Index / 文档索引
-
-### Root Directory Files / 根目录文件
-
-| File / 文件 | Purpose / 用途 |
-|-------------|----------------|
-| `CLAUDE.md` | **This file** - Project guide for AI assistants / 本文件 - AI助手项目指南 |
-| `README.md` | Original Time-LLM documentation / 原始Time-LLM文档 |
-| `report.md` | **Thesis proposal (Chinese)** / 开题报告（中文） |
-| `baogao.md` | **Thesis proposal (Formal)** / 开题报告（正式版） |
-
-### `md/` Directory - Core Documentation / md目录 - 核心文档
-
-#### Technical Analysis / 技术分析
-| File / 文件 | Content / 内容 |
-|-------------|----------------|
-| `md/work.md` | Initial project notes / 初始项目笔记 |
-| `md/work1.md` | Environment setup guide / 环境搭建指南 |
-| `md/work2.md` | **Deep technical analysis** - Data flow, architecture, metrics / 深度技术分析 - 数据流、架构、指标 |
-| `md/work3.md` | Complete technical documentation / 完整技术文档 |
-| `md/Trainable-part.md` | **Trainable parameters analysis** (~56M params) / 可训练参数分析 |
-| `md/tuidao.md` | Mathematical derivations / 数学推导 |
-
-#### Innovation Schemes / 创新方案
-| File / 文件 | Content / 内容 |
-|-------------|----------------|
-| `md/chuangxin.md` | **Innovation overview** - 7 schemes summary / 创新概述 - 7个方案总结 |
-| `md/chuangxin-lilun.md` | **Theoretical analysis** - Each scheme's theory / 理论分析 - 每个方案的理论基础 |
-| `md/chuangxin-shijian.md` | **Implementation guide** - Code for all 7 schemes / 实践指南 - 7个方案的代码 |
-| `md/chuangxin-jieshi1.md` | **Scheme 1 deep dive** - Hybrid model with traditional methods / 方案一深度解析 - 传统模型混合 |
-
-#### Operational Guides / 操作指南
-| File / 文件 | Content / 内容 |
-|-------------|----------------|
-| `md/mingling.md` | Command parameters guide / 命令参数指南 |
-| `md/mingling_2.md` | Extended command guide / 扩展命令指南 |
-| `md/wenti.md` | **Troubleshooting** - All issues and solutions / 故障排除 - 所有问题和解决方案 |
-| `md/yunxing-fuxian.md` | Reproduction guide / 复现指南 |
-| `md/yunxing-wenda.md` | Q&A during running / 运行问答 |
-| `md/yunfuwuqi.md` | Cloud server deployment / 云服务器部署 |
-
-### `Task_Requirements/` Directory / 任务要求目录
-
-| File / 文件 | Content / 内容 |
-|-------------|----------------|
-| `task.md` | Thesis task requirements / 毕设任务书 |
-| `Reference-writing-style.md` | User's writing style reference / 用户写作风格参考 |
+| Task / 任务 | Priority / 优先级 |
+|-------------|-------------------|
+| v4 training + results / v4 训练出结果 | High |
+| Ablation experiments / 消融实验 | Medium |
+| Thesis writing / 论文撰写 | Medium |
 
 ---
 
-## 4. Innovation Points / 创新点
+## 3. v4 Architecture / v4 架构
 
-### Overview of 7 Schemes / 7个方案概述
+### Data Flow / 数据流
 
-| # | Scheme / 方案 | Key Idea / 核心思想 | Expected Gain / 预期收益 | Priority / 优先级 |
-|---|---------------|---------------------|--------------------------|-------------------|
-| 1 | **Hybrid Model** / 混合模型 | Traditional + LLM residual learning / 传统模型+LLM残差学习 | MSE ↓15-20%, interpretability / 可解释性 | 🥇 Highest / 最高 |
-| 2 | **Multi-Scale Decomposition** / 多尺度分解 | Different scales for different patterns / 不同尺度捕获不同模式 | MSE ↓5-10% | Medium / 中 |
-| 3 | **Frequency Enhancement** / 频域增强 | FFT decompose trend/seasonal / FFT分解趋势/季节性 | MSE ↓10-15% | 🥈 High / 高 |
-| 4 | **Inter-Variate Attention** / 变量间注意力 | Attention on variable dimension / 在变量维度做注意力 | MSE ↓8-15% | 🥈 High / 高 |
-| 5 | **Dynamic Prompt** / 动态提示 | Learnable prompt encoder / 可学习提示编码器 | MSE ↓10-20% | Medium / 中 |
-| 6 | **MoE (Sparse Experts)** / 稀疏专家混合 | Multiple experts for different patterns / 多专家处理不同模式 | Capacity ↑4x | Low / 低 |
-| 7 | **Vocabulary Initialization** / 词表初始化 | Task-specific initialization / 任务相关初始化 | Convergence ↑20-30% | Low / 低 |
-
-### Scheme 1 Deep Dive (Recommended) / 方案一详解（推荐）
-
-**Document / 文档**: `md/chuangxin-jieshi1.md`
-
-#### Three Sub-approaches / 三个子方案
-
-**A. Residual Learning Architecture / 残差学习架构** ⭐⭐⭐⭐⭐
 ```
-Original Series → [ARIMA/ES] → Linear Prediction + Residual
-                                        ↓
-                               [Time-LLM learns residual]
-                                        ↓
-              Final = Linear Prediction + Nonlinear Prediction
+Input [B, T, N]
+    │
+    ▼
+[Baseline Time-LLM] ──→ pred_s1 [B, pred_len, N]
+    │                        │
+    │                        ▼
+    │              ┌─── DM v4 (PolyphaseMultiScale) ───┐
+    │              │  S2(k=2,diff): 2 branches          │
+    │              │  S3(k=4,identity): 4 branches      │
+    │              │  S4(k=4,smooth): 4 branches        │
+    │              │  S5(k=4,trend): 4 branches         │
+    │              │  Total: 14 polyphase branches      │
+    │              └────────────┬───────────────────────┘
+    │                           ▼
+    │              ┌─── C2F v4 (ExpertVotingFusion) ────┐
+    │              │  Stage1: MAD intra-scale voting     │
+    │              │    → consolidated [S1..S5]          │
+    │              │  Stage2: DWT cross-scale trend      │
+    │              │    → weighted_pred                  │
+    │              └────────────┬───────────────────────┘
+    │                           ▼
+    ├──→ x_normed ──→ PVDR v4 (EnhancedDualRetriever)
+    │              │  LogisticExtremeClassifier (6 params)
+    │              │  BayesianChangePointDetector (3 params)
+    │              │  4-mode retrieval: direct/extreme/
+    │              │    turning_point/normal
+    │              │  → hist_refs + pvdr_signals
+    │              └────────────┬───────────────────────┘
+    │                           ▼
+    │              ┌─── AKG v4 (ThresholdAdaptiveGating) ┐
+    │              │  effective_gate = sigmoid(C)         │
+    │              │    × (1-extreme_adj)                 │
+    │              │    × (1-cp_adj) × conf_adj           │
+    │              │  3 learnable thresholds              │
+    │              │  Fusion Matrix F [2S, pred_len]      │
+    │              └────────────┬───────────────────────┘
+    │                           ▼
+    └──────────────────→ denormalize → output
 ```
-- Theory: Hybrid ARIMA-LSTM paper proves effectiveness / 理论：混合ARIMA-LSTM论文证明有效性
-- Expected: MSE ↓10-15% / 预期：MSE下降10-15%
 
-**B. Segment-wise Adaptive Fusion / 分段自适应融合** ⭐⭐⭐⭐
+### Loss Function / 损失函数
+
 ```
-Input Sequence → [Segment Analyzer] → Different weights per segment
-                     ↓
-    Segment 1 (periodic) → Traditional weight: 0.8
-    Segment 2 (complex)  → Time-LLM weight: 0.9
-    Segment 3 (trending) → Traditional weight: 0.7
+L_total = L_main + warmup × (
+    λ_consist × L_consist   (DWT wavelet trend consistency)
+  + λ_gate    × L_gate      (gate decisiveness regularization)
+  + λ_expert  × L_expert    (expert correction rate, v4 NEW)
+)
 ```
-- Theory: AMD Framework (Mixture-of-Experts) / 理论：AMD框架
-- Expected: Additional MSE ↓3-5% / 预期：额外MSE下降3-5%
 
-**C. Knowledge Distillation / 知识蒸馏** ⭐⭐⭐
-- Soft label distillation: Learn teacher's distribution / 软标签蒸馏
-- Decomposition distillation: Learn trend/seasonal decomposition / 分解蒸馏
-- Behavior distillation: Learn direction/magnitude consistency / 行为蒸馏
-- Theory: DE-TSMCL achieves MSE ↓24.2% on ETTm1 / 理论：DE-TSMCL在ETTm1上MSE下降24.2%
+### Five Trainable Matrix Types / 五类可训练矩阵
 
-### Applicable Scenarios / 适用场景
-
-| Scheme / 方案 | Best For / 最适合 | Dataset Examples / 数据集示例 |
-|---------------|-------------------|------------------------------|
-| Hybrid Model / 混合模型 | Periodic + interpretability needed / 周期性+需要可解释性 | ETT, Traffic |
-| Frequency Enhancement / 频域增强 | Strong periodicity / 强周期性 | ETTh (24h/168h cycles) |
-| Inter-Variate Attention / 变量间注意力 | Multi-variate with correlations / 多变量且有相关性 | Electricity, Weather |
-| Multi-Scale / 多尺度 | Long sequences (720+) / 长序列 | ETTm (15-min data) |
+| Matrix / 矩阵 | Shape | Description / 描述 |
+|-------|-------|---------|
+| Parameter Matrix Theta_s | 4 ScaleEncoders, ~100K | Per-scale Conv + FlattenHead |
+| Weight Matrix W | [5, pred_len] | C2F cross-scale fusion weights |
+| Connection Matrix C | [5, pred_len] | AKG base gate (history vs prediction) |
+| Fusion Matrix F | [10, pred_len] | AKG final combination |
+| Threshold params tau | 12 total | AKG(3) + LogisticRegression(6) + BayesianCP(3) |
 
 ---
 
-## 5. Architecture & Trainable Parameters / 架构与可训练参数
-
-### Frozen vs Trainable / 冻结与可训练
+## 4. Trainable Parameters / 可训练参数
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Time-LLM Architecture                     │
-├─────────────────────────────────────────────────────────────┤
-│  FROZEN (LLM Backbone) / 冻结部分                            │
-│  ├── GPT-2: 124M params / 参数                               │
-│  ├── Qwen 2.5 3B: ~1.5GB (4-bit) / 4-bit量化后               │
-│  └── Word Embeddings: Used as Key/Value / 用作K/V            │
-├─────────────────────────────────────────────────────────────┤
-│  TRAINABLE (~56M params for GPT-2) / 可训练部分              │
+┌──────────────────────────────────────────────────────────────┐
+│  FROZEN (LLM Backbone)                                       │
+│  ├── GPT-2: 124M params                                     │
+│  └── Qwen 2.5 3B: ~1.5GB (4-bit)                            │
+├──────────────────────────────────────────────────────────────┤
+│  TRAINABLE — Baseline Time-LLM (~56M for GPT-2)             │
 │  ├── PatchEmbedding: ~800 params                             │
-│  │   └── Conv1d + Positional Embedding                       │
 │  ├── Mapping Layer: ~50M params                              │
-│  │   └── Linear(vocab_size=50257, num_tokens=1000)           │
 │  ├── Reprogramming Layer: ~6M params                         │
-│  │   └── Cross-Attention (Q: patches, K/V: mapped words)     │
 │  └── FlattenHead: ~37K params                                │
-│      └── Linear(head_nf, pred_len)                           │
-└─────────────────────────────────────────────────────────────┘
+├──────────────────────────────────────────────────────────────┤
+│  TRAINABLE — v4 Innovation Modules (~103K)                   │
+│  ├── DM (PolyphaseMultiScale):                               │
+│  │   ├── 4 PatchEmbeddings (Conv1d)                          │
+│  │   └── 4 ScaleEncoders (Conv1d×2 + FlattenHead)           │
+│  ├── C2F (ExpertVotingFusion):                               │
+│  │   └── weight_matrix [5, 96] = 480 params                 │
+│  ├── PVDR (EnhancedDualRetriever):                           │
+│  │   ├── LightweightPatternEncoder (Linear(5, 64))          │
+│  │   ├── LogisticExtremeClassifier (Linear(5, 1)) = 6       │
+│  │   ├── BayesianChangePointDetector = 3                    │
+│  │   └── Memory bank thresholds [5] = 5                     │
+│  └── AKG (ThresholdAdaptiveGating):                          │
+│      ├── connection_matrix [5, 96] = 480                    │
+│      ├── fusion_matrix [10, 96] = 960                       │
+│      └── 3 threshold params = 3                             │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### Data Shape Flow (ETTh1 Example) / 数据形状流（ETTh1示例）
+---
 
-| Stage / 阶段 | Shape / 形状 | Description / 描述 |
-|--------------|--------------|---------------------|
-| Input / 输入 | `[32, 96, 7]` | Batch=32, SeqLen=96, N_vars=7 |
-| After Patching / 分块后 | `[224, 12, 16]` | B*N=224, num_patches=12, d_model=16 |
-| After Reprogramming / 重编程后 | `[224, 12, 768]` | Mapped to llm_dim=768 |
-| With Prompt / 加提示后 | `[224, 140, 768]` | Prompt(128) + Patches(12) |
-| LLM Output / LLM输出 | `[224, 140, 768]` | GPT-2 forward |
-| Final Output / 最终输出 | `[32, 96, 7]` | After FlattenHead + denormalize |
+## 5. Code Structure / 代码结构
 
-### Key Code Locations / 关键代码位置
-
-| Component / 组件 | File / 文件 | Lines / 行号 |
-|------------------|-------------|--------------|
-| Main Model / 主模型 | `models/TimeLLM.py` | Full file / 全文件 |
-| LLM Loading / LLM加载 | `models/TimeLLM.py` | 43-96 (Qwen), 83-117 (GPT-2) |
-| LLM Freezing / LLM冻结 | `models/TimeLLM.py` | 163-164 |
-| Prompt Construction / 提示构建 | `models/TimeLLM.py` | 207-230 |
-| PatchEmbedding | `layers/Embed.py` | 160-186 |
-| ReprogrammingLayer | `models/TimeLLM.py` | 267-305 |
-| Instance Normalization / 实例归一化 | `layers/StandardNorm.py` | Full file / 全文件 |
+```
+Time-LLM/
+├── CLAUDE.md                           # This guide / 本指南
+├── README.md                           # Technical documentation / 技术文档
+├── claude_v4_readme.md                 # v4 architecture design spec / v4 架构设计文档
+│
+├── models/
+│   ├── TimeLLM.py                      # Original baseline model / 原始基线模型
+│   ├── TimeLLM_Enhanced_v3.py          # v3 model (deprecated) / v3 模型
+│   └── TimeLLM_Enhanced_v4.py          # v4 model (ACTIVE) / v4 模型 (当前)
+│
+├── layers/
+│   ├── Embed.py                        # PatchEmbedding
+│   ├── StandardNorm.py                 # Instance normalization
+│   ├── TAPR_v3.py                      # v3 TAPR (deprecated)
+│   ├── TAPR_v4.py                      # v4: PolyphaseMultiScale + ExpertVotingFusion
+│   ├── GRAM_v3.py                      # v3 GRAM (deprecated)
+│   └── GRAM_v4.py                      # v4: EnhancedDualRetriever + ThresholdAdaptiveGating
+│
+├── run_main.py                         # Original training entry / 原始训练入口
+├── run_main_enhanced_v3.py             # v3 training entry (deprecated)
+├── run_main_enhanced_v4.py             # v4 training entry (ACTIVE) / v4 训练入口
+│
+├── scripts/
+│   ├── TimeLLM_ETTh1_enhanced_v4.sh    # v4 training script (ACTIVE) / v4 训练脚本
+│   ├── TimeLLM_ETTh1_enhanced_v3_2.sh  # v3 training script (reference)
+│   └── ...
+│
+├── data_provider/
+│   ├── data_factory.py                 # Dataset router
+│   └── data_loader.py                  # Dataset classes
+│
+├── dataset/
+│   ├── ETT-small/                      # ETTh1, ETTh2, ETTm1, ETTm2
+│   └── prompt_bank/                    # Domain prompt texts
+│
+├── base_models/
+│   ├── gpt2/                           # GPT-2 weights
+│   └── openai-community/gpt2/         # GPT-2 (alternative path)
+│
+├── utils/
+│   ├── tools.py                        # EarlyStopping, adjust_learning_rate, etc.
+│   └── metrics.py                      # MSE, MAE, RMSE
+│
+├── md/                                 # Documentation directory / 文档目录
+│   ├── chuangxin*.md                   # Innovation schemes / 创新方案
+│   ├── work*.md                        # Technical analysis / 技术分析
+│   └── wenti.md                        # Troubleshooting / 故障排除
+│
+└── Task_Requirements/                  # Thesis requirements / 毕设要求
+    ├── task.md
+    └── Reference-writing-style.md
+```
 
 ---
-## 6. Common Commands / 常用命令
 
-### Training with GPT-2 (Fallback) / 使用GPT-2训练
+## 6. Key Code Locations / 关键代码位置
+
+### v4 Module Mapping / v4 模块对应
+
+| Module / 模块 | File / 文件 | Class / 类 | Key Lines |
+|-------|------|-------|-----------|
+| DM v4 | `layers/TAPR_v4.py` | `PolyphaseMultiScale` | 185-328 |
+| C2F v4 | `layers/TAPR_v4.py` | `ExpertVotingFusion` | 335-581 |
+| DWT Helper | `layers/TAPR_v4.py` | `dwt_haar_1d()` | 165-178 |
+| PVDR v4 | `layers/GRAM_v4.py` | `EnhancedDualRetriever` | 347-557 |
+| AKG v4 | `layers/GRAM_v4.py` | `ThresholdAdaptiveGating` | 564-691 |
+| LogisticExtreme | `layers/GRAM_v4.py` | `LogisticExtremeClassifier` | 68-99 |
+| BayesianCP | `layers/GRAM_v4.py` | `BayesianChangePointDetector` | 106-225 |
+| MemoryBank | `layers/GRAM_v4.py` | `EnhancedMultiScaleMemoryBank` | 232-341 |
+| Main Model | `models/TimeLLM_Enhanced_v4.py` | `Model` | 96-579 |
+| Baseline forward | `models/TimeLLM_Enhanced_v4.py` | `_baseline_forecast()` | 376-434 |
+| v4 forecast flow | `models/TimeLLM_Enhanced_v4.py` | `forecast()` | 455-514 |
+| Auxiliary loss | `models/TimeLLM_Enhanced_v4.py` | `compute_auxiliary_loss()` | 520-564 |
+
+### Reused from v3 (verbatim) / 从 v3 复用
+
+| Component | Source |
+|-----------|--------|
+| `SignalTransform` + `TRANSFORM_REGISTRY` | `TAPR_v3.py:24-94` → `TAPR_v4.py:31-101` |
+| `ScaleEncoder` | `TAPR_v3.py:101-132` → `TAPR_v4.py:108-139` |
+| `_create_patches()` | `TAPR_v3.py:139-151` → `TAPR_v4.py:146-158` |
+| `LightweightPatternEncoder` | `GRAM_v3.py:25-55` → `GRAM_v4.py:31-61` |
+| `FlattenHead` | `TimeLLM.py` → `TimeLLM_Enhanced_v4.py:41-53` |
+| `ReprogrammingLayer` | `TimeLLM.py` → `TimeLLM_Enhanced_v4.py:60-89` |
+
+---
+
+## 7. Common Commands / 常用命令
+
+### v4 Training (GPT-2, Full modules) / v4 训练
 
 ```bash
-accelerate launch --num_processes 1 --mixed_precision fp16 run_main.py \
+# Full v4 (TAPR + GRAM)
+bash scripts/TimeLLM_ETTh1_enhanced_v4.sh
+
+# Ablation: TAPR only
+USE_TAPR=1 USE_GRAM=0 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh
+
+# Ablation: GRAM only
+USE_TAPR=0 USE_GRAM=1 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh
+
+# Ablation: Baseline only
+USE_TAPR=0 USE_GRAM=0 bash scripts/TimeLLM_ETTh1_enhanced_v4.sh
+```
+
+### Direct Python Execution / 直接 Python 运行
+
+```bash
+python run_main_enhanced_v4.py \
   --task_name long_term_forecast \
   --is_training 1 \
   --root_path ./dataset/ETT-small/ \
   --data_path ETTh1.csv \
+  --model_id ETTh1_512_96 \
+  --model_comment v4_gpt2_TAPR_GRAM \
   --model TimeLLM \
   --data ETTh1 \
   --features M \
-  --seq_len 96 \
-  --pred_len 96 \
-  --batch_size 4 \
-  --llm_model GPT2 \
-  --llm_dim 768 \
-  --llm_layers 6 \
-  --train_epochs 10
+  --seq_len 512 --label_len 48 --pred_len 96 \
+  --enc_in 7 --dec_in 7 --c_out 7 \
+  --batch_size 32 --d_model 64 --n_heads 8 --d_ff 128 \
+  --llm_model GPT2 --llm_dim 768 --llm_layers 12 \
+  --train_epochs 50 --patience 10 --learning_rate 0.0001 \
+  --use_tapr --n_scales 5 --downsample_rates 1,2,4,4,4 \
+  --use_gram --build_memory --top_k 5 --d_repr 64 \
+  --warmup_steps 500 --seed 2021 --prompt_domain 1
 ```
 
-### Environment Verification / 环境验证
+### Environment Check / 环境验证
 
 ```bash
-# Check CUDA / 检查CUDA
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}')"
-
-# Monitor GPU / 监控GPU
-watch -n 1 nvidia-smi
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+python -c "from layers.TAPR_v4 import PolyphaseMultiScale, ExpertVotingFusion; print('TAPR_v4 OK')"
+python -c "from layers.GRAM_v4 import EnhancedDualRetriever, ThresholdAdaptiveGating; print('GRAM_v4 OK')"
+python -c "from models.TimeLLM_Enhanced_v4 import Model; print('Model OK')"
 ```
 
 ---
 
-## 7. Code Structure / 代码结构
+## 8. CLI Parameters / 命令行参数
 
-```
-Time-LLM/
-├── CLAUDE.md                 # This guide / 本指南
-├── README.md                 # Original docs / 原始文档
-├── report.md                 # Thesis proposal / 开题报告
-├── baogao.md                 # Thesis proposal (formal) / 开题报告（正式）
-│
-├── md/                       # Documentation / 文档目录
-│   ├── chuangxin*.md        # Innovation schemes / 创新方案
-│   ├── work*.md             # Technical analysis / 技术分析
-│   ├── Trainable-part.md    # Trainable params / 可训练参数
-│   ├── mingling*.md         # Command guides / 命令指南
-│   └── wenti.md             # Troubleshooting / 故障排除
-│
-├── Task_Requirements/        # Thesis requirements / 毕设要求
-│   ├── task.md              # Task description / 任务描述
-│   └── Reference-writing-style.md
-│
-├── models/
-│   └── TimeLLM.py           # Core model / 核心模型 ⭐
-│
-├── layers/
-│   ├── Embed.py             # PatchEmbedding / 分块嵌入
-│   └── StandardNorm.py      # Instance normalization / 实例归一化
-│
-├── data_provider/
-│   ├── data_factory.py      # Dataset router / 数据集路由
-│   └── data_loader.py       # Dataset classes / 数据集类
-│
-├── dataset/
-│   ├── ETT-small/           # ETTh1, ETTh2, ETTm1, ETTm2
-│   └── prompt_bank/         # Domain prompts / 领域提示
-│
-├── base_models/
-│   ├── gpt2/                # GPT-2 weights / GPT-2权重
-│   └── Qwen2.5-3B/          # Qwen 2.5 3B weights / Qwen权重
-│
-├── scripts/
-│   ├── TimeLLM_ETTh1.sh     # ETTh1 training script / 训练脚本
-│   ├── TimeLLM_ETTm1_2.sh   # WSL optimized script / WSL优化脚本
-│   └── ...
-│
-├── run_main.py              # Main entry point / 主入口 ⭐
-├── run_m4.py                # M4 benchmark entry / M4基准入口
-└── utils/
-    ├── tools.py             # Utilities / 工具函数
-    └── metrics.py           # Evaluation metrics / 评估指标
-```
+### v4 New Parameters (added on top of v3) / v4 新增参数
+
+| Parameter | Type | Default | Description / 描述 |
+|-----------|------|---------|---------|
+| `--mad_threshold` | float | 3.0 | MAD outlier detection multiplier for intra-scale voting |
+| `--reliability_threshold` | float | 0.3 | Correction rate threshold for unreliable scale flag |
+| `--reliability_penalty` | float | 0.3 | Weight multiplier for unreliable scales |
+| `--lambda_expert` | float | 0.05 | Expert correction loss weight |
+| `--cp_min_segment` | int | 16 | Bayesian CP detector minimum segment length |
+| `--cp_max_depth` | int | 4 | Bayesian CP detector maximum recursion depth |
+
+### TAPR Parameters (from v3) / TAPR 参数
+
+| Parameter | Type | Default | Description / 描述 |
+|-----------|------|---------|---------|
+| `--use_tapr` | flag | False | Enable DM + C2F modules |
+| `--n_scales` | int | 5 | Total scales including baseline |
+| `--downsample_rates` | str | `1,2,4,4,4` | Per-scale rates (must match DM polyphase k) |
+| `--lambda_consist` | float | 0.1 | Consistency loss weight |
+| `--decay_factor` | float | 0.5 | Inference weight decay for inconsistent scales |
+
+### GRAM Parameters (from v3) / GRAM 参数
+
+| Parameter | Type | Default | Description / 描述 |
+|-----------|------|---------|---------|
+| `--use_gram` | flag | False | Enable PVDR + AKG modules |
+| `--lambda_gate` | float | 0.01 | Gate regularization loss weight |
+| `--similarity_threshold` | float | 0.8 | PVDR base retrieval threshold |
+| `--extreme_threshold_reduction` | float | 0.2 | Threshold reduction for extreme data |
+| `--top_k` | int | 5 | PVDR top-K retrieval count |
+| `--d_repr` | int | 64 | Pattern representation dimension |
+| `--build_memory` | flag | False | Build PVDR memory bank (required for first run) |
+
+### Key Base Parameters / 关键基础参数
+
+| Parameter | Default | Note |
+|-----------|---------|------|
+| `--llm_model` | LLAMA | Use `GPT2` for v4 training |
+| `--llm_dim` | 4096 | Use `768` for GPT-2 |
+| `--llm_layers` | 6 | GPT-2 has 12 total layers |
+| `--batch_size` | 32 | Reduce if OOM |
+| `--seq_len` | 96 | v4 shell script uses 512 |
+| `--pred_len` | 96 | Prediction horizon |
 
 ---
 
-## 8. Troubleshooting / 故障排除
+## 9. Checkpoint & Resume / 断点续训
+
+### Can Change (no shape conflict) / 可以修改
+
+```
+BATCH, NUM_WORKERS, LEARNING_RATE, TRAIN_EPOCHS, PATIENCE
+LAMBDA_CONSIST, LAMBDA_GATE, LAMBDA_EXPERT (loss weights)
+DECAY_FACTOR, MAD_THRESHOLD, RELIABILITY_THRESHOLD, RELIABILITY_PENALTY
+WARMUP_STEPS, TEST_EPOCHS, SAVE_STEPS, SAVE_TOTAL_LIMIT
+```
+
+### Cannot Change (shape mismatch) / 不可修改
+
+```
+LLM_PATH, LLM_DIM, LLM_LAYERS, --llm_model
+SEQ_LEN, LABEL_LEN, PRED_LEN
+D_MODEL, D_FF, N_HEADS, ENC_IN, DEC_IN, C_OUT
+USE_TAPR, USE_GRAM, N_SCALES, D_REPR, DOWNSAMPLE_RATES
+CP_MIN_SEGMENT, CP_MAX_DEPTH (affects BayesianCP structure)
+```
+
+### Resume Notes / 续训注意事项
+
+- `BUILD_MEMORY` must be `0` when resuming (memory bank saved in checkpoint)
+- v3 and v4 checkpoints are **incompatible** (different module interfaces)
+- Set `RESUME_FROM` to the checkpoint path, `RESUME_COUNTER` to override EarlyStopping count
+
+### Inference from Checkpoint / 从 checkpoint 推理
+
+```python
+ckpt = torch.load('checkpoints/.../checkpoint')
+model.load_state_dict(ckpt['model'])
+model.eval()
+```
+
+Checkpoint fields are saved/loaded in `run_main_enhanced_v4.py` training loop via `safe_torch_save()`.
+
+---
+
+## 10. Troubleshooting / 故障排除
+
+### OOM Priority / 显存不足处理优先级
+
+1. Reduce `BATCH` (32 -> 16 -> 8 -> 4)
+2. Reduce `SEQ_LEN` (512 -> 384 -> 256)
+3. Reduce `D_FF` (128 -> 64 -> 32)
+4. Reduce `D_MODEL` (64 -> 32)
+5. Reduce `N_SCALES` (5 -> 3)
+6. Reduce `TOP_K` (5 -> 3)
+7. Disable GRAM (`USE_GRAM=0`)
+8. Reduce `LLM_LAYERS` (12 -> 6 -> 4)
 
 ### Common Issues / 常见问题
-
-**Full troubleshooting guide / 完整故障排除指南**: `md/wenti.md`
 
 | Issue / 问题 | Solution / 解决方案 |
 |--------------|---------------------|
 | `CUDA_HOME does not exist` | `pip uninstall deepspeed -y` |
-| `Input type mismatch (bfloat16 vs float32)` | Fixed in `models/TimeLLM.py:297-298` |
-| `AttributeError: 'content'` | Fixed in `run_main.py:133-134` |
-| OOM (Out of Memory) / 显存溢出 | Reduce `--batch_size` to 2, `--llm_layers` to 4 |
-| Slow convergence / 收敛慢 | Increase `--learning_rate` to 0.01 |
+| dtype mismatch (bfloat16 vs float32) | Fixed in model code (`.float()` conversion) |
+| OOM with GPT-2 | GPT-2 is ~0.5GB; issue is batch/seq_len, not model size |
+| v3 checkpoint in v4 | Incompatible; must retrain from scratch |
+| CRLF line endings in shell scripts | `sed -i 's/\r$//' scripts/*.sh` |
 
-### Critical Code Fixes Applied / 已应用的关键修复
-
-1. **`run_main.py` Line 107**: Removed `deepspeed_plugin` for single GPU / 移除deepspeed_plugin支持单GPU
-2. **`run_main.py` Lines 133-134**: Moved `load_content()` before model creation / 将load_content移至模型创建前
-3. **`models/TimeLLM.py` Lines 297-298**: Fixed dtype mismatch for 4-bit quantization / 修复4-bit量化数据类型不匹配
-
----
-
-## Quick Reference Card / 快速参考卡
+### VRAM Estimate (GPT-2 + v4, batch=32) / 显存估算
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Time-LLM Quick Reference                  │
-├─────────────────────────────────────────────────────────────┤
-│ Innovation Docs / 创新文档:                                  │
-│   md/chuangxin.md          - Overview / 概述                 │
-│   md/chuangxin-lilun.md    - Theory / 理论                   │
-│   md/chuangxin-shijian.md  - Implementation / 实现           │
-│   md/chuangxin-jieshi1.md  - Scheme 1 Deep Dive / 方案一详解 │
-├─────────────────────────────────────────────────────────────┤
-│ Technical Docs / 技术文档:                                   │
-│   md/work2.md              - Deep analysis / 深度分析        │
-│   md/Trainable-part.md     - Trainable params / 可训练参数   │
-│   md/wenti.md              - Troubleshooting / 故障排除      │
-├─────────────────────────────────────────────────────────────┤
-│ Key Parameters / 关键参数:                                   │
-│   --llm_layers 6           ⭐ CRITICAL for 6GB VRAM          │
-│   --batch_size 4           ⭐ CRITICAL for 6GB VRAM          │
-│   --load_in_4bit           ⭐ Enable 4-bit quantization      │
-│   --prompt_domain 1        Load domain prompts               │
-├─────────────────────────────────────────────────────────────┤
-│ Priority Innovation / 优先创新:                              │
-│   1. Hybrid Model (Scheme 1) - md/chuangxin-jieshi1.md      │
-│   2. Inter-Variate Attention - md/chuangxin-shijian.md §4   │
-│   3. Frequency Enhancement - md/chuangxin-shijian.md §3     │
-└─────────────────────────────────────────────────────────────┘
+GPT-2 (FP32, 12 layers):          ~0.5 GB
+Trainable params:                  ~0.3 GB
+DM v4 (4 ScaleEncoders):          ~2 MB
+C2F v4 (weight_matrix + DWT):     < 1 KB
+PVDR v4 (memory + detectors):     ~5.3 MB
+AKG v4 (matrices + thresholds):   < 1 KB
+Intermediate tensors:              ~0.8 GB
+System overhead:                   ~1.0 GB
+Total:                             ~2.6 GB
 ```
 
 ---
 
-**Last Updated / 最后更新**: 2026-01-11
-**Project Status / 项目状态**: Innovation implementation phase / 创新实现阶段
-**Hardware / 硬件**: NVIDIA GTX 1660 Ti (6GB) + Qwen 2.5 3B (4-bit)
-- 3. 训练完成后推理
-# 加载 checkpoint (不是 checkpoint_step_N)
-ckpt = torch.load('checkpoints/.../checkpoint')
-model.load_state_dict(ckpt['model'])
-model.eval()这个训练完成后推理,ckpt相关参数,在哪里体现的?
+**Last Updated / 最后更新**: 2026-02-24
+**Active Version / 当前版本**: v4
+**Entry Point / 入口文件**: `run_main_enhanced_v4.py`
+**Training Script / 训练脚本**: `scripts/TimeLLM_ETTh1_enhanced_v4.sh`
