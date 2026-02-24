@@ -251,68 +251,9 @@ Input Sequence → [Segment Analyzer] → Different weights per segment
 | Instance Normalization / 实例归一化 | `layers/StandardNorm.py` | Full file / 全文件 |
 
 ---
+## 6. Common Commands / 常用命令
 
-## 6. Hardware Constraints / 硬件限制
-
-### Current Setup / 当前配置
-
-- **GPU**: NVIDIA GTX 1660 Ti (6GB VRAM)
-- **OS**: Windows 11 + WSL2 (Ubuntu)
-- **LLM**: Qwen 2.5 3B with 4-bit quantization / 4-bit量化
-
-### VRAM Budget / 显存预算
-
-| Component / 组件 | VRAM / 显存 |
-|------------------|-------------|
-| Qwen 2.5 3B (4-bit) | ~1.5 GB |
-| Trainable params / 可训练参数 | ~0.5 GB |
-| Intermediate tensors / 中间变量 | ~2.0 GB |
-| System overhead / 系统占用 | ~1.0 GB |
-| **Total / 总计** | **~5.0 GB** ✅ |
-
-### Recommended Parameters / 推荐参数
-
-| Parameter / 参数 | Value / 值 | Reason / 原因 |
-|------------------|------------|---------------|
-| `--batch_size` | 4-8 | VRAM limit / 显存限制 |
-| `--llm_layers` | 6 | **Critical** - Prevents OOM / 防止溢出 |
-| `--seq_len` | 96-512 | Balance accuracy/memory / 平衡精度和内存 |
-| `--d_model` | 16-32 | Patch embedding dimension / 分块嵌入维度 |
-| `--d_ff` | 32-128 | FFN dimension / FFN维度 |
-| `--load_in_4bit` | True | Enable quantization / 启用量化 |
-
----
-
-## 7. Common Commands / 常用命令
-
-### Training with Qwen 2.5 3B (Recommended) / 使用Qwen 2.5 3B训练（推荐）
-
-```bash
-# WSL/Linux
-bash ./scripts/TimeLLM_ETTm1_2.sh
-
-# Or direct command / 或直接命令
-python run_main.py \
-  --task_name long_term_forecast \
-  --is_training 1 \
-  --root_path ./dataset/ETT-small/ \
-  --data_path ETTm1.csv \
-  --model TimeLLM \
-  --data ETTm1 \
-  --features M \
-  --seq_len 512 \
-  --pred_len 96 \
-  --batch_size 4 \
-  --llm_model QWEN \
-  --llm_model_path "./base_models/Qwen2.5-3B" \
-  --llm_dim 2048 \
-  --llm_layers 6 \
-  --load_in_4bit \
-  --prompt_domain 1 \
-  --train_epochs 10
-```
-
-### Training with GPT-2 (Fallback) / 使用GPT-2训练（备选）
+### Training with GPT-2 (Fallback) / 使用GPT-2训练
 
 ```bash
 accelerate launch --num_processes 1 --mixed_precision fp16 run_main.py \
@@ -344,7 +285,7 @@ watch -n 1 nvidia-smi
 
 ---
 
-## 8. Code Structure / 代码结构
+## 7. Code Structure / 代码结构
 
 ```
 Time-LLM/
@@ -397,7 +338,7 @@ Time-LLM/
 
 ---
 
-## 9. Troubleshooting / 故障排除
+## 8. Troubleshooting / 故障排除
 
 ### Common Issues / 常见问题
 
@@ -405,7 +346,6 @@ Time-LLM/
 
 | Issue / 问题 | Solution / 解决方案 |
 |--------------|---------------------|
-| `KeyError: 'qwen2'` | `pip install "transformers>=4.40.0" --upgrade` |
 | `CUDA_HOME does not exist` | `pip uninstall deepspeed -y` |
 | `Input type mismatch (bfloat16 vs float32)` | Fixed in `models/TimeLLM.py:297-298` |
 | `AttributeError: 'content'` | Fixed in `run_main.py:133-134` |
